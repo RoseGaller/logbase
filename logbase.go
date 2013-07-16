@@ -95,7 +95,7 @@ import (
 	"path"
 	"path/filepath"
     "strings"
-    "fmt"
+    //"fmt"
 )
 
 type LBUINT uint32 // Unsigned Logbase integer type used on file
@@ -210,7 +210,6 @@ func SetDebugLevel(levelstr string) {
 // Open an existing Logbase or create it if necessary, identified by a
 // directory path.
 func Open(lbPath string) (lbase *Logbase, err error) {
-    fmt.Println("CHECK001")
     if Debug == nil {InitDebugLogger()}
 
     // Use existing Logbase if present

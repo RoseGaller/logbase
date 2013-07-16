@@ -22,6 +22,7 @@ func TestCreateLogbase(t *testing.T) {
 	}
 }
 
+/*
 func TestSaveKeyValue(t *testing.T) {
     lbase, err := Open(lbname)
 	if err != nil {
@@ -54,6 +55,37 @@ func TestRetrieveKeyValue(t *testing.T) {
 		t.Fatalf(fmt.Sprintf(
             "The retrieved value %q differed from the expected value %q: %s",
             v, expected),
+            err)
+    }
+}
+*/
+
+// Put and get a key-value pair in a single "session".
+func TestSaveRetrieveKeyValue(t *testing.T) {
+    lbase, err := Open(lbname)
+	if err != nil {
+		t.Fatalf("Could not open test logbase: %s", err)
+	}
+
+    key := "key"
+    val := []byte("value")
+
+    errput := lbase.Put(key, val)
+	if errput != nil {
+		t.Fatalf("Could not put key value pair into test logbase: %s", errput)
+	}
+
+    got, errget := lbase.Get(key)
+	if errget != nil {
+		t.Fatalf("Could not get key value pair from test logbase: %s", errget)
+	}
+
+    gotstr := string(got)
+    valstr := string(val)
+    if valstr != gotstr {
+		t.Fatalf(fmt.Sprintf(
+            "The retrieved value %q differed from the expected value %q: %s",
+            gotstr, valstr),
             err)
     }
 }
