@@ -134,9 +134,19 @@ type MasterCatalog struct {
     index   map[string]*MasterCatalogRecord // The in-memory index
 }
 
+// Init a MasterCatalog.
+func NewMasterCatalog() *MasterCatalog {
+	return &MasterCatalog{index: make(map[string]*MasterCatalogRecord)}
+}
+
 //  Stale key-value pairs scheduled to be deleted from log files.
 type Zapmap struct {
     zapmap  map[string][]ZapRecord // "Zapmap"
+}
+
+// Init a Zapmap, which points to stale data scheduled for deletion.
+func NewZapmap() *Zapmap {
+	return &Zapmap{zapmap: make(map[string][]ZapRecord)}
 }
 
 // Per Logbase configuration
@@ -184,7 +194,7 @@ func InitDebugLogger() {
     writers := []io.Writer{os.Stdout, file}
     level := DebugLevels["BASIC"]
     Debug = NewDebugLogger(level, writers)
-    Debug.StampedPrintln(">>> LOGBASE DEBUG LOG")
+    Debug.StampedPrintln(">>> LOGBASE DEBUG LOG STARTED")
     Debug.Println("")
     return
 }
@@ -195,16 +205,6 @@ func SetDebugLevel(levelstr string) {
 	if !ok {FmtErrKeyNotFound(levelstr).Fatal()}
     Debug.level = level
     return
-}
-
-// Init a MasterCatalog.
-func NewMasterCatalog() *MasterCatalog {
-	return &MasterCatalog{index: make(map[string]*MasterCatalogRecord)}
-}
-
-// Init a Zapmap, which points to stale data scheduled for deletion.
-func NewZapmap() *Zapmap {
-	return &Zapmap{zapmap: make(map[string][]ZapRecord)}
 }
 
 // Open an existing Logbase or create it if necessary, identified by a
@@ -304,7 +304,7 @@ func (lbase *Logbase) Init() error {
 // zapmap.
 func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
     keystr := string(irec.key)
-    newmcr := new(MasterCatalogRecord)
+    newmcr := NewMasterCatalogRecord()
     newmcr.FromIndexRecord(irec, fnum)
     oldmcr, exists := lbase.index[keystr]
 
@@ -312,7 +312,7 @@ func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
         // Add to zapmap
         var zrecs []ZapRecord
         zrecs, _ = lbase.zapmap[keystr]
-        zrec := new(ZapRecord)
+        zrec := NewZapRecord()
         zrec.FromMasterCatalogRecord(oldmcr)
         zrecs = append(zrecs, *zrec)
         lbase.zapmap[keystr] = zrecs
@@ -335,7 +335,7 @@ func (lbase *Logbase) Put(keystr string, val []byte) error {
             lbase.NewLiveLog()
         }
 
-        lrec := NewLogRecord(keystr, val)
+        lrec := MakeLogRecord(keystr, val)
 	    irec, err := lbase.livelog.StoreData(lrec)
         if err != nil {return err}
         lbase.Update(irec, lbase.livelog.fnum)

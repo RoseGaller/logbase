@@ -153,7 +153,7 @@ func (gfile *Gofile) Process(process Processor, rectype int, needDataVal bool) (
 
 // Read a record from the gofile, including the value depending on readDataVal.
 func (gfile *Gofile) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *GenericRecord, newpos LBUINT, err error) {
-    rec = new(GenericRecord)
+    rec = NewGenericRecord()
     // Key size
 	err = gfile.ReadIntoParam(pos, rec.ksz, "keysize") // implicitely moves position
     if err != nil {return}

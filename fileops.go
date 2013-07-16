@@ -82,10 +82,26 @@ type Logfile struct {
     indexfile   *Indexfile // index for this logfile
 }
 
+// Init a Logfile.
+func NewLogfile() *Logfile {
+	return &Logfile{
+        Gofile: &Gofile{},
+        indexfile: NewIndexfile(),
+    }
+}
+
 // Speed up initialisation of the master catalog.
 type Indexfile struct {
     *Gofile
     *Index
+}
+
+// Init an Indexfile.
+func NewIndexfile() *Indexfile {
+	return &Indexfile{
+        Gofile: &Gofile{},
+        Index: &Index{},
+    }
 }
 
 // Allow persistence of master catalog.
@@ -94,10 +110,26 @@ type Masterfile struct {
     *MasterCatalog
 }
 
+// Init a Masterfile.
+func NewMasterfile() *Masterfile {
+	return &Masterfile{
+        Gofile: &Gofile{},
+        MasterCatalog: NewMasterCatalog(),
+    }
+}
+
 // Allow persistence of scheduled kv pair deletion.
 type Zapfile struct {
     *Gofile
     *Zapmap
+}
+
+// Init a Zapfile.
+func NewZapfile() *Zapfile {
+	return &Zapfile{
+        Gofile: &Gofile{},
+        Zapmap: NewZapmap(),
+    }
 }
 
 // Logbase methods.
@@ -109,7 +141,7 @@ func (lbase *Logbase) OpenLogfile(fnum LBUINT) (lfile *Logfile, err error) {
     gfile, err := lbase.OpenGofile(fpath)
     if err != nil {return}
 
-    lfile = new(Logfile)
+    lfile = NewLogfile()
     lfile.Gofile = gfile
     lfile.path = fpath
     lfile.fnum = fnum
@@ -117,7 +149,7 @@ func (lbase *Logbase) OpenLogfile(fnum LBUINT) (lfile *Logfile, err error) {
     ipath := lbase.MakeIndexfilePath(fnum)
     gfile, err = lbase.OpenGofile(ipath)
 
-    lfif := new(Indexfile)
+    lfif := NewIndexfile()
     lfif.Gofile = gfile
     lfile.indexfile = lfif
 
@@ -325,7 +357,7 @@ func (ifile *Indexfile) Save(lfindex *Index) (err error) {
         pos = pos.plus(nwrite)
     }
     */
-    irsz := int(ParamSize(new(IndexRecord)))
+    irsz := int(ParamSize(NewIndexRecord()))
     bytes := make([]byte, len(lfindex.list) * irsz)
     var start int = 0
     for _, rec := range lfindex.list {

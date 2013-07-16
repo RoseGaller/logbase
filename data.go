@@ -57,12 +57,22 @@ type Vpos struct {
 
 // Provide a generic record file for "IO read infrastructure".
 type GenericRecord struct {
-    header  []byte
     *Ksize
     *Vsize
     *Kdata
     *Vdata
     *Vpos
+}
+
+// Init a GenericRecord.
+func NewGenericRecord() *GenericRecord {
+	return &GenericRecord{
+        Ksize: &Ksize{},
+        Vsize: &Vsize{},
+        Kdata: &Kdata{},
+        Vdata: &Vdata{},
+        Vpos: &Vpos{},
+    }
 }
 
 // Define a log file record.
@@ -74,10 +84,28 @@ type LogRecord struct {
     *Vdata
 }
 
+// Init a LogRecord.
+func NewLogRecord() *LogRecord {
+	return &LogRecord{
+        Ksize: &Ksize{},
+        Vsize: &Vsize{},
+        Kdata: &Kdata{},
+        Vdata: &Vdata{},
+    }
+}
+
 // Define an index file record.
 type IndexRecord struct {
     *IndexRecordHeader
     *Kdata
+}
+
+// Init a IndexRecord.
+func NewIndexRecord() *IndexRecord {
+	return &IndexRecord{
+        IndexRecordHeader: NewIndexRecordHeader(),
+        Kdata: &Kdata{},
+    }
 }
 
 // Define the header for an index file record.
@@ -87,6 +115,15 @@ type IndexRecordHeader struct {
     *Vpos
 }
 
+// Init a IndexRecordHeader.
+func NewIndexRecordHeader() *IndexRecordHeader {
+	return &IndexRecordHeader{
+        Ksize: &Ksize{},
+        Vsize: &Vsize{},
+        Vpos: &Vpos{},
+    }
+}
+
 // Define a record used in the logbase master key index.
 type MasterCatalogRecord struct {
     fnum    LBUINT // log files indexed sequentially from 0
@@ -94,9 +131,24 @@ type MasterCatalogRecord struct {
     *Vpos
 }
 
+// Init a MasterCatalogRecord.
+func NewMasterCatalogRecord() *MasterCatalogRecord {
+	return &MasterCatalogRecord{
+        Vsize: &Vsize{},
+        Vpos: &Vpos{},
+    }
+}
+
 // For in-memory use, initially replicates a master catalog record.
 type ZapRecord struct {
     *MasterCatalogRecord
+}
+
+// Init a ZapRecord.
+func NewZapRecord() *ZapRecord {
+	return &ZapRecord{
+        MasterCatalogRecord: NewMasterCatalogRecord(),
+    }
 }
 
 // Used by ReadRecord to read generic (packed) value size.
@@ -127,7 +179,7 @@ func (zrec *ZapRecord) FromMasterCatalogRecord(mcr *MasterCatalogRecord) {
 
 // Map GenericRecord to a new LogRecord.
 func (rec *GenericRecord) ToLogRecord() *LogRecord {
-    lrec := new(LogRecord)
+    lrec := NewLogRecord()
     lrec.ksz = rec.ksz
     lrec.vsz = rec.vsz - ParamSize(lrec.crc)
     lrec.key = rec.key
@@ -140,7 +192,7 @@ func (rec *GenericRecord) ToLogRecord() *LogRecord {
 
 // Map GenericRecord to a new IndexRecord.
 func (rec *GenericRecord) ToIndexRecord() *IndexRecord {
-    irec := new(IndexRecord)
+    irec := NewIndexRecord()
     irec.ksz = rec.ksz
     irec.key = rec.key
     // Unpack
@@ -152,7 +204,7 @@ func (rec *GenericRecord) ToIndexRecord() *IndexRecord {
 
 // Map LogRecord to an IndexRecord.  Note vpos is left as nil.
 func (lrec *LogRecord) ToIndexRecord() *IndexRecord {
-    irec := new(IndexRecord)
+    irec := NewIndexRecord()
     irec.ksz = lrec.ksz
     irec.vsz = lrec.vsz
     irec.key = lrec.key
@@ -176,7 +228,7 @@ func (rec *GenericRecord) ToZapRecordList() (string, []ZapRecord) {
 // Returns the number of ZapRecords in GenericRecord value, unless a partial
 // zap record is detected, which is fatal.
 func (rec *GenericRecord) ZapLen() int {
-    zrecsize := ParamSize(new(ZapRecord))
+    zrecsize := ParamSize(NewZapRecord())
     n := rec.vsz/zrecsize
     rem := rec.vsz - n * zrecsize
     if rem != 0 {FmtErrPartialZapData(zrecsize, rec.vsz).Fatal()}
@@ -185,7 +237,7 @@ func (rec *GenericRecord) ZapLen() int {
 
 // Map GenericRecord to a new MasterLogRecord.
 func (rec *GenericRecord) ToMasterCatalogRecord() *MasterCatalogRecord {
-    mcr := new(MasterCatalogRecord)
+    mcr := NewMasterCatalogRecord()
     // Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
 	binary.Read(bfr, binary.BigEndian, &mcr.fnum)
@@ -234,8 +286,8 @@ func (mcr *MasterCatalogRecord) ReadVal(lbase *Logbase) (val []byte, err error) 
 
 // Byte packing functions.
 
-func NewLogRecord(keystr string, val []byte) *LogRecord {
-    lrec := new(LogRecord)
+func MakeLogRecord(keystr string, val []byte) *LogRecord {
+    lrec := NewLogRecord()
 	lrec.key = []byte(keystr)
     lrec.ksz = AsLBUINT(len(lrec.key))
     lrec.val = val
