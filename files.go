@@ -11,6 +11,7 @@ import (
     "bytes"
     "bufio"
     "encoding/binary"
+    "sync"
 )
 
 const (
@@ -27,9 +28,14 @@ const (
 type Gofile struct {
 	file    *os.File
     path    string // path name used to open file
-    lock    Locker
+    rwmu    *sync.RWMutex
 }
 
+func NewGofile() *Gofile {
+    return &Gofile{rwmu: new(sync.RWMutex)}
+}
+
+/*
 type Locker struct {
     read    Lock
     write   Lock
@@ -39,6 +45,7 @@ type Lock struct {
     isLocked    bool
     hasChanged  chan bool
 }
+*/
 
 //  Map of all files managed by the Logbase.
 type FileRegister struct {
@@ -58,13 +65,6 @@ func OpenFile(fpath string) (*os.File, error) {
         os.O_APPEND |
         os.O_RDWR,
         DEFAULT_FILEMODE)
-}
-
-func NewGofile() *Gofile {
-    gfile := new(Gofile)
-    gfile.lock.read.hasChanged = make(chan bool)
-    gfile.lock.write.hasChanged = make(chan bool)
-    return gfile
 }
 
 // Open a new or existing Gofile for read/write access.
@@ -217,13 +217,12 @@ func (gfile *Gofile) LockedReadAt(pos, size LBUINT, desc string) (bfr []byte, er
 	bfr = make([]byte, size)
 	var nread int
 
-    if gfile.IsLocked() {gfile.WaitForUnlock()} // other reads not ok
+    gfile.rwmu.RLock() // other reads ok
 
-    gfile.LockForRead()
     // Locked action
 	nread, err = gfile.file.ReadAt(bfr, int64(pos))
 	if err != nil {return}
-    gfile.UnlockForRead()
+    gfile.rwmu.RUnlock()
 
 	if LBUINT(nread) != size {
         err = FmtErrDataSize(desc, gfile.path, size, nread)
@@ -234,81 +233,12 @@ func (gfile *Gofile) LockedReadAt(pos, size LBUINT, desc string) (bfr []byte, er
 // Wait for any locks, set lock, write bytes to file and unlock.
 func (gfile *Gofile) LockedWriteAt(bytes []byte, pos LBUINT) (nwrite int, err error) {
 
-    if gfile.IsLocked() {gfile.WaitForUnlock()}
+    gfile.rwmu.Lock()
 
-    gfile.LockForWrite()
     // Locked action
 	nwrite, err = gfile.file.WriteAt(bytes, int64(pos))
     if err != nil {return}
-    gfile.UnlockForWrite()
+    gfile.rwmu.Unlock()
 
-    return
-}
-
-// Locking
-
-// Advises whether both read and write locks are currently active on the file.
-func (gfile *Gofile) IsLocked() bool {
-    return gfile.lock.read.isLocked && gfile.lock.write.isLocked
-}
-
-// Advises whether both write lock is currently active on the file.
-func (gfile *Gofile) IsLockedForWrite() bool {
-    return gfile.lock.write.isLocked
-}
-
-// Advises whether both read and write locks are currently inactive on the file.
-func (gfile *Gofile) IsUnlocked() bool {
-    return !gfile.lock.read.isLocked && !gfile.lock.write.isLocked
-}
-
-// Locks the file for the purpose of reading.
-func (gfile *Gofile) LockForRead() (wasLocked bool) {
-    wasLocked = gfile.lock.read.isLocked
-    gfile.lock.read.isLocked = true
-    return wasLocked
-}
-
-// Locks the file for the purpose of writing.
-func (gfile *Gofile) LockForWrite() (wasLocked bool) {
-    wasLocked = gfile.lock.write.isLocked
-    gfile.lock.write.isLocked = true
-    return wasLocked
-}
-
-// Unlocks the file following a read.
-func (gfile *Gofile) UnlockForRead() {
-    gfile.lock.read.isLocked = false
-    gfile.lock.read.hasChanged <- true
-    return
-}
-
-// Unlocks the file following a write.
-func (gfile *Gofile) UnlockForWrite() {
-    gfile.lock.write.isLocked = false
-    gfile.lock.write.hasChanged <- true
-    return
-}
-
-// Wait until the lock for reading has been removed.  Does nothing if unlocked.
-func (gfile *Gofile) WaitForReadUnlock() (changed bool) {
-    if gfile.lock.read.isLocked {
-        changed = <-gfile.lock.read.hasChanged
-    }
-    return
-}
-
-// Wait until the lock for writing has been removed.  Does nothing if unlocked.
-func (gfile *Gofile) WaitForWriteUnlock() (changed bool) {
-    if gfile.lock.read.isLocked {
-        changed = <-gfile.lock.read.hasChanged
-    }
-    return
-}
-
-// Wait until both read and write locks have been removed.
-func (gfile *Gofile) WaitForUnlock() {
-    gfile.WaitForReadUnlock()
-    gfile.WaitForWriteUnlock()
     return
 }

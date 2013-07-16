@@ -32,7 +32,7 @@ func TestSaveKeyValue(t *testing.T) {
     v := []byte("value")
     err = lbase.Put(k, v)
 	if err != nil {
-		t.Fatalf("Could not put key value pair into logbase: %s", err)
+		t.Fatalf("Could not put key value pair into test logbase: %s", err)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestRetrieveKeyValue(t *testing.T) {
     var result []byte
     result, err = lbase.Get(k)
 	if err != nil {
-		t.Fatalf("Could not put key value pair into logbase: %s", err)
+		t.Fatalf("Could not retrieve key value pair from test logbase: %s", err)
 	}
     v := string(result)
     if v != expected {
