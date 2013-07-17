@@ -4,6 +4,7 @@
 package logbase
 
 import (
+    "os"
 	"io"
     "fmt"
     "time"
@@ -36,11 +37,35 @@ func NewDebugLogger(level int, writers []io.Writer) *DebugLogger {
     return &DebugLogger{level, writers}
 }
 
+// Make a default DebugLogger writing to the screen and a file.
+func MakeDebugLogger() *DebugLogger{
+    file, err := OpenFile(DEBUG_FILENAME)
+	if err != nil {WrapError("Could not open debug log: ", err).Fatal()}
+    writers := []io.Writer{os.Stdout, file}
+    level := DebugLevels["BASIC"]
+    debug := NewDebugLogger(level, writers)
+    debug.Advise("Debug logger started")
+    return debug
+}
+
+func DebugLevelName(level int) string {
+    for name, i := range DebugLevels {
+        if i == level {return name}
+    }
+    FmtErrValNotFound(string(level)).Fatal()
+    return ""
+}
+
 // Allow the debug level to be changed on the fly.
 func (debug *DebugLogger) SetLevel(levelstr string) {
-    level, ok := DebugLevels[strings.ToUpper(levelstr)]
+    oldname := DebugLevelName(debug.level)
+    newname := strings.ToUpper(levelstr)
+    level, ok := DebugLevels[newname]
 	if !ok {FmtErrKeyNotFound(levelstr).Fatal()}
     debug.level = level
+    debug.Advise(fmt.Sprintf(
+          "Debug level changed from %q to %q",
+          oldname, newname))
     return
 }
 
@@ -64,40 +89,42 @@ func stamp(msg, prefix string) string {
 }
 
 // Output time stamped debug message.
-func (debug *DebugLogger) StampedPrintln(msg string) {
+func (debug *DebugLogger) StampedPrintln(msg string) *DebugLogger {
     debug.output(stamp(msg, ""))
-    return
+    return debug
 }
 // Output debug message.
-func (debug *DebugLogger) Println(msg string) {
+func (debug *DebugLogger) Println(msg string) *DebugLogger {
     debug.output(msg)
-    return
+    return debug
 }
 
 // Output debug message as long as current level is at least FINE.
-func (debug *DebugLogger) Fine(msg string) {
+func (debug *DebugLogger) Fine(msg string) *DebugLogger {
     if debug.level >= DEBUGLEVEL_FINE {debug.output(stamp(msg, "FINE"))}
-    return
+    return debug
 }
 
 // Output debug message as long as current level is at least BASIC.
-func (debug *DebugLogger) Basic(msg string) {
+func (debug *DebugLogger) Basic(msg string) *DebugLogger {
     if debug.level >= DEBUGLEVEL_BASIC {debug.output(stamp(msg, "BASIC"))}
-    return
+    return debug
 }
 
 // Output debug message as long as current level is at least ADVISE.
-func (debug *DebugLogger) Advise(msg string) {
+func (debug *DebugLogger) Advise(msg string) *DebugLogger {
     if debug.level >= DEBUGLEVEL_ADVISE {debug.output(stamp(msg, "ADVISE"))}
-    return
+    return debug
 }
 
 // Issue warning to debug output.
-func (debug *DebugLogger) Warn(msg string) {
+func (debug *DebugLogger) Warn(msg string) *DebugLogger {
     debug.output(stamp(msg, "WARNING"))
+    return debug
 }
 
 // Issue error to debug output.
-func (debug *DebugLogger) Error(err *AppError) {
+func (debug *DebugLogger) Error(err *AppError) *DebugLogger {
     debug.output(stamp(err.Message(), "ERROR"))
+    return debug
 }

@@ -26,7 +26,7 @@ func (err *AppError) Fatal()  {
 }
 
 // Make an AppError, capturing the callers details.
-func makeAppError() *AppError {
+func MakeAppError() *AppError {
     pc, filename, line, _ := runtime.Caller(1)
     return &AppError{
         filename: filename,
@@ -52,79 +52,75 @@ func (err *AppError) Equals(other *AppError) bool {
     return err.tag == other.tag
 }
 
-func WrapError(msg string, in error) (err *AppError) {
-    err = makeAppError()
-    err.msg = msg + ": " + in.Error()
-    err.tag = "wrapped error"
-    return
+func (err *AppError) Describe(msg, tag string) *AppError {
+    err.msg = msg
+    err.tag = tag
+    return err
+}
+
+func WrapError(msg string, in error) *AppError {
+    return MakeAppError().Describe(msg + ": " + in.Error(), "wrapped error")
 }
 
 // Int mismatch
 
 func FmtErrIntMismatch(num64 int64, path string, byA string, num int) *AppError {
-    msg := fmt.Sprintf(
+    return ErrIntMismatch(fmt.Sprintf(
         "The index %d extracted from log file %q cannot be " +
         "properly represented by a %s, result is %d",
-        num64, path, byA, num)
-    return ErrIntMismatch(msg)
+        num64, path, byA, num))
 }
 
-func ErrIntMismatch(msg string) (err *AppError) {
-    err = makeAppError()
-    err.msg = msg
-    err.tag = "int mismatch"
-    return
+func ErrIntMismatch(msg string) *AppError {
+    return MakeAppError().Describe(msg, "int mismatch")
 }
 
 // Key not found.
 
 func FmtErrKeyNotFound(keystr string) *AppError {
-    msg := fmt.Sprintf("Key %q not found", keystr)
-    return ErrKeyNotFound(msg)
+    return ErrKeyNotFound(fmt.Sprintf("Key %q not found", keystr))
 }
 
-func ErrKeyNotFound(msg string) (err *AppError) {
-    err = makeAppError()
-    err.msg = msg
-    err.tag = "key not found"
-    return
+func ErrKeyNotFound(msg string) *AppError {
+    return MakeAppError().Describe(msg, "key not found")
+}
+
+// Value not found.
+
+func FmtErrValNotFound(valstr string) *AppError {
+    return ErrValNotFound(fmt.Sprintf("Value %q not found", valstr))
+}
+
+func ErrValNotFound(msg string) *AppError {
+    return MakeAppError().Describe(msg, "value not found")
 }
 
 // File not found.
 
 func FmtErrFileNotFound(path string) *AppError {
-    msg := fmt.Sprintf("File %q not found", path)
-    return ErrFileNotFound(msg)
+    return ErrFileNotFound(fmt.Sprintf("File %q not found", path))
 }
 
-func ErrFileNotFound(msg string) (err *AppError) {
-    err = makeAppError()
-    err.msg = msg
-    err.tag = "file not found"
-    return
+func ErrFileNotFound(msg string) *AppError {
+    return MakeAppError().Describe(msg, "file not found")
 }
 
 // Unexpected data size.
 
 func FmtErrDataSize(desc, path string, size LBUINT, nread int) *AppError {
-    msg := fmt.Sprintf(
+    return ErrDataSize(fmt.Sprintf(
         "Invalid %s size while reading record for file %q. " +
         "Expected %d got %d bytes",
-        desc, path, size, nread)
-    return ErrDataSize(msg)
+        desc, path, size, nread))
 }
 
 func FmtErrPartialZapData(size, nread LBUINT) *AppError {
-    msg := fmt.Sprintf(
+    return ErrDataSize(fmt.Sprintf(
         "A ZapRecord has %d bytes but the GenericRecord read " +
         "%d bytes, so some data must be missing",
-        size, nread)
-    return ErrDataSize(msg)
+        size, nread))
 }
 
-func ErrDataSize(msg string) (err *AppError) {
-    err = makeAppError()
-    err.msg = msg
-    err.tag = "Unexpected data size"
-    return
+func ErrDataSize(msg string) *AppError {
+    return MakeAppError().Describe(msg, "unexpected data size")
 }

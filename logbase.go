@@ -91,7 +91,6 @@ package logbase
 import (
     "github.com/h00gs/toml"
 	"os"
-    "io"
 	"path"
 	"path/filepath"
     //"fmt"
@@ -157,7 +156,7 @@ type LogbaseConfiguration struct {
     FILE_LOCKING_ON         bool // Check presence of lock files before r/w
 }
 
-// Default configuration.
+// Default configuration in case file is absent.
 func DefaultConfig() *LogbaseConfiguration {
     return &LogbaseConfiguration{
         LOGFILE_NAME_EXTENSION:     "logbase",
@@ -177,19 +176,8 @@ func LoadConfig(path string) (config *LogbaseConfiguration, err error) {
     }
     if err != nil {return}
     config = new(LogbaseConfiguration)
-    _, err = toml.Decode(path, &config)
+    _, err = toml.DecodeFile(path, &config)
     return
-}
-
-// Debugging
-
-// Initialise a global debug logger writing to the screen and a file.
-func MakeDebugLogger() *DebugLogger{
-    file, err := OpenFile(DEBUG_FILENAME)
-	if err != nil {WrapError("Could not open debug log: ", err).Fatal()}
-    writers := []io.Writer{os.Stdout, file}
-    level := DebugLevels["BASIC"]
-    return NewDebugLogger(level, writers)
 }
 
 // Open an existing Logbase or create it if necessary, identified by a
