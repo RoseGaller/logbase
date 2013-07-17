@@ -7,6 +7,7 @@ import (
 	"io"
     "fmt"
     "time"
+    "strings"
 )
 
 const (
@@ -33,6 +34,14 @@ type DebugLogger struct {
 // Init a DebugLogger.
 func NewDebugLogger(level int, writers []io.Writer) *DebugLogger {
     return &DebugLogger{level, writers}
+}
+
+// Allow the debug level to be changed on the fly.
+func (debug *DebugLogger) SetLevel(levelstr string) {
+    level, ok := DebugLevels[strings.ToUpper(levelstr)]
+	if !ok {FmtErrKeyNotFound(levelstr).Fatal()}
+    debug.level = level
+    return
 }
 
 // Writes the debug message.  Any error encountered results in app termination.

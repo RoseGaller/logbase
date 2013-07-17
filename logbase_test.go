@@ -15,7 +15,7 @@ func TestCreateLogbase(t *testing.T) {
     err = os.Remove(debuglog)
 	if err != nil {t.Fatalf("Trouble deleting file " + debuglog + ": %s", err)}
 
-    _, err = Open(lbname)
+    _, err = MakeLogbase(lbname)
 
 	if err != nil {
 		t.Fatalf("Could not create test logbase: %s", err)
@@ -62,7 +62,7 @@ func TestRetrieveKeyValue(t *testing.T) {
 
 // Put and get a key-value pair in a single "session".
 func TestSaveRetrieveKeyValue(t *testing.T) {
-    lbase, err := Open(lbname)
+    lbase, err := MakeLogbase(lbname)
 	if err != nil {
 		t.Fatalf("Could not open test logbase: %s", err)
 	}

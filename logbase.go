@@ -94,7 +94,6 @@ import (
     "io"
 	"path"
 	"path/filepath"
-    "strings"
     //"fmt"
 )
 
@@ -111,8 +110,6 @@ const (
     LBUINT_MAX      int64 = 4294967295
 )
 
-var logbases map[string]*Logbase = make(map[string]*Logbase)
-
 // Logbase database instance.
 type Logbase struct {
     name        string // Logbase name
@@ -121,7 +118,8 @@ type Logbase struct {
     *FileRegister
 	*MasterCatalog
     *Zapmap
-    config      *Configuration
+    config      *LogbaseConfiguration
+    debug       *DebugLogger
 }
 
 //  Index of all key-value pairs in a log file.
@@ -152,7 +150,7 @@ func NewZapmap() *Zapmap {
 // Per Logbase configuration
 
 // User space constants
-type Configuration struct {
+type LogbaseConfiguration struct {
     LOGFILE_NAME_EXTENSION  string // Postfix for binary data log file names
     INDEXFILE_NAME_EXTENSION string // Postfix for binary "hint" file names
     LOGFILE_MAXBYTES        int // Size of live log file before spawning a new one
@@ -160,8 +158,8 @@ type Configuration struct {
 }
 
 // Default configuration.
-func DefaultConfig() *Configuration {
-    return &Configuration{
+func DefaultConfig() *LogbaseConfiguration {
+    return &LogbaseConfiguration{
         LOGFILE_NAME_EXTENSION:     "logbase",
         INDEXFILE_NAME_EXTENSION:   "index",
         LOGFILE_MAXBYTES:           1048576, // 1 MB
@@ -170,7 +168,7 @@ func DefaultConfig() *Configuration {
 }
 
 // Load optional logbase configuration file parameters.
-func LoadConfig(path string) (config *Configuration, err error) {
+func LoadConfig(path string) (config *LogbaseConfiguration, err error) {
     _, err = os.Stat(path)
     if os.IsNotExist(err) {
         config = DefaultConfig()
@@ -178,44 +176,25 @@ func LoadConfig(path string) (config *Configuration, err error) {
         return
     }
     if err != nil {return}
-    config = new(Configuration)
+    config = new(LogbaseConfiguration)
     _, err = toml.Decode(path, &config)
     return
 }
 
 // Debugging
 
-var Debug *DebugLogger
-
 // Initialise a global debug logger writing to the screen and a file.
-func InitDebugLogger() {
+func MakeDebugLogger() *DebugLogger{
     file, err := OpenFile(DEBUG_FILENAME)
 	if err != nil {WrapError("Could not open debug log: ", err).Fatal()}
     writers := []io.Writer{os.Stdout, file}
     level := DebugLevels["BASIC"]
-    Debug = NewDebugLogger(level, writers)
-    Debug.StampedPrintln(">>> LOGBASE DEBUG LOG STARTED")
-    Debug.Println("")
-    return
-}
-
-// Allow the debug level to be changed on the fly.
-func SetDebugLevel(levelstr string) {
-    level, ok := DebugLevels[strings.ToUpper(levelstr)]
-	if !ok {FmtErrKeyNotFound(levelstr).Fatal()}
-    Debug.level = level
-    return
+    return NewDebugLogger(level, writers)
 }
 
 // Open an existing Logbase or create it if necessary, identified by a
 // directory path.
-func Open(lbPath string) (lbase *Logbase, err error) {
-    if Debug == nil {InitDebugLogger()}
-
-    // Use existing Logbase if present
-    lbase, present := logbases[lbPath]
-    if present {return}
-
+func MakeLogbase(lbPath string) (lbase *Logbase, err error) {
 	err = os.MkdirAll(lbPath, DEFAULT_FILEMODE)
 	if err != nil {return}
 
@@ -235,6 +214,7 @@ func Open(lbPath string) (lbase *Logbase, err error) {
 	lbase.MasterCatalog = NewMasterCatalog()
 	lbase.Zapmap = NewZapmap()
 	lbase.FileRegister = NewFileRegister()
+    lbase.debug = MakeDebugLogger()
 
     err = lbase.Init()
 	if err != nil {return}
