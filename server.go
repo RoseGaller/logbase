@@ -13,6 +13,7 @@ import (
 const (
     ID_LENGTH               int = 10 // Should be divisible by 2
     SERVER_CONFIG_FILENAME  string = "logbase_server.cfg"
+    DEBUG_FILENAME          string = "debug.log"
 )
 
 type Server struct {
@@ -23,9 +24,9 @@ type Server struct {
 
 func NewServer() *Server {
     return &Server{
-        id:         GenerateRandomHexId(ID_LENGTH),
+        id:         GenerateRandomHexStr(ID_LENGTH),
         logbases:   make(map[string]*Logbase),
-        Debug:      MakeDebugLogger(),
+        Debug:      ScreenFileLogger(DEBUG_FILENAME),
     }
 }
 
@@ -74,19 +75,19 @@ func (server *Server) Id() string {return server.id}
 
 // Open an existing Logbase or create it if necessary, identified by a
 // directory path.
-func (server *Server) Open(lbPath string) (lbase *Logbase, err error) {
+func (server *Server) Open(lbPath string) *Logbase {
     // Use existing Logbase if present
     lbase, present := server.logbases[lbPath]
-    if present {return}
-
-    return
+    if present {return lbase}
+    lbase = MakeLogbase(lbPath, server.Debug)
+    return lbase.Init()
 }
 
 // Generate a random id.
 // Credit to Russ Cox https://groups.google.com/forum/#!topic/golang-nuts/d0nF_k4dSx4
 // for the idea of using /dev/urandom.
 // TODO check cross compatibility of /dev/urandom
-func GenerateRandomHexId(length int) string {
+func GenerateRandomHexStr(length int) string {
     frnd, _ := os.OpenFile("/dev/urandom", os.O_RDONLY, 0)
     rnd := make([]byte, length/2)
     frnd.Read(rnd)

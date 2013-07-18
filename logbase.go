@@ -100,7 +100,6 @@ type LBUINT uint32 // Unsigned Logbase integer type used on file
 
 const (
     APPNAME         string = "LOGBASE"
-    DEBUG_FILENAME  string = "debug.log"
     CONFIG_FILENAME string = "logbase.cfg"
     LBUINT_SIZE     LBUINT = 4 // bytes 
     LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
@@ -119,6 +118,19 @@ type Logbase struct {
     *Zapmap
     config      *LogbaseConfiguration
     debug       *DebugLogger
+    err         error // permits a more "fluent" api
+}
+
+// Make a new Logbase instance based on the given directory path.
+func MakeLogbase(lbPath string, debug *DebugLogger) *Logbase {
+	return &Logbase{
+        name:           filepath.Base(lbPath),
+        path:           lbPath,
+	    FileRegister:   NewFileRegister(),
+	    MasterCatalog:  NewMasterCatalog(),
+	    Zapmap:         NewZapmap(),
+        debug:          debug,
+    }
 }
 
 //  Index of all key-value pairs in a log file.
@@ -180,38 +192,9 @@ func LoadConfig(path string) (config *LogbaseConfiguration, err error) {
     return
 }
 
-// Open an existing Logbase or create it if necessary, identified by a
-// directory path.
-func MakeLogbase(lbPath string) (lbase *Logbase, err error) {
-	err = os.MkdirAll(lbPath, DEFAULT_FILEMODE)
-	if err != nil {return}
-
-	lbase = &Logbase{
-        name: filepath.Base(lbPath),
-        path: lbPath,
-    }
-
-    cfgPath := path.Join(lbPath, CONFIG_FILENAME)
-
-    config, errcfg := LoadConfig(cfgPath)
-	if errcfg != nil {
-        WrapError("Problem loading config file " + cfgPath, errcfg).Fatal()
-    }
-
-    lbase.config = config
-	lbase.MasterCatalog = NewMasterCatalog()
-	lbase.Zapmap = NewZapmap()
-	lbase.FileRegister = NewFileRegister()
-    lbase.debug = MakeDebugLogger()
-
-    err = lbase.Init()
-	if err != nil {return}
-
-    // Initialise livelog
-	err = lbase.SetLiveLog()
-	if err != nil {return}
-
-	return
+func (lbase *Logbase) SetErr(err error) *Logbase {
+    lbase.err = err
+    return lbase
 }
 
 // Check whether a live log file has been defined.
@@ -221,21 +204,33 @@ func (lbase *Logbase) HasLiveLog() bool {
 
 // Execute an orderly shutdown including finalisation of index and
 // zap files.
-func (lbase *Logbase) Close() error {
-	var err error
+func (lbase *Logbase) Close() *Logbase {
 	if lbase.HasLiveLog() {
-		err = lbase.livelog.file.Close()
+		lbase.err = lbase.livelog.file.Close()
 	}
-	return err
+	return lbase
 }
 
 // Iterate through all log files in sequence.  Add each index file entry into
 // the internal master catalog.  If the key already exists in the master,
 // append the old master catalog record into a "zapmap" which schedules stale
 // data for deletion.
-func (lbase *Logbase) Init() error {
+func (lbase *Logbase) Init() *Logbase {
+    // Make dir if it does not exist
+    err := os.MkdirAll(lbase.path, DEFAULT_FILEMODE)
+	if err != nil {return lbase.SetErr(err)}
+
+    // Load optional logbase config file
+    cfgPath := path.Join(lbase.path, CONFIG_FILENAME)
+    config, errcfg := LoadConfig(cfgPath)
+	if errcfg != nil {
+        WrapError("Problem loading config file " + cfgPath, errcfg).Fatal()
+    }
+    lbase.config = config
+
+    // Get logfile list
     fpaths, fnums, err := lbase.GetLogfilePaths()
-    if err != nil {return err}
+    if err != nil {return lbase.SetErr(err)}
 
     var refresh bool
     for i, fnum := range fnums {
@@ -245,7 +240,7 @@ func (lbase *Logbase) Init() error {
         if os.IsNotExist(err) {
             refresh = true
         } else if err != nil {
-            return err
+            return lbase.SetErr(err)
         } else {
             if istat.Size() == 0 {
                 if fstat, _ := os.Stat(fpaths[i]); fstat.Size() > 0 {
@@ -256,20 +251,21 @@ func (lbase *Logbase) Init() error {
             }
         }
         if refresh {
-            _, err = lbase.RefreshIndexfile(fnum)
+            lbase.RefreshIndexfile(fnum)
         } else {
-            _, err = lbase.ReadIndexfile(fnum)
+            lbase.ReadIndexfile(fnum)
         }
-        if err != nil {return err}
+        if lbase.err != nil {return lbase}
     }
 
-    return nil
+    // Initialise livelog
+	return lbase.SetLiveLog()
 }
 
 // Update the master catalog map with an index record (usually) generated from
 // an individual log file, and add an existing (stale) value entry to the
 // zapmap.
-func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
+func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) *Logbase {
     keystr := string(irec.key)
     newmcr := NewMasterCatalogRecord()
     newmcr.FromIndexRecord(irec, fnum)
@@ -287,10 +283,14 @@ func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
 
     // Update the master catalog
     lbase.index[keystr] = newmcr
+    return lbase
 }
 
 // Save the key-value pair in the live log.
-func (lbase *Logbase) Put(keystr string, val []byte) error {
+func (lbase *Logbase) Put(keystr string, val []byte) *Logbase {
+    lbase.debug.Fine(
+        "Putting (%s,[%d]byte) into logbase %q",
+        keystr, len(val), lbase.name)
 	if lbase.HasLiveLog() {
         nbytes :=
             int(LBUINT_SIZE_x3) +
@@ -304,11 +304,10 @@ func (lbase *Logbase) Put(keystr string, val []byte) error {
 
         lrec := MakeLogRecord(keystr, val)
 	    irec, err := lbase.livelog.StoreData(lrec)
-        if err != nil {return err}
-        lbase.Update(irec, lbase.livelog.fnum)
-        return nil
+        if err != nil {return lbase.SetErr(err)}
+        return lbase.Update(irec, lbase.livelog.fnum)
 	}
-	return ErrFileNotFound("Live log file is not defined")
+	return lbase.SetErr(ErrFileNotFound("Live log file is not defined"))
 }
 
 // Retrieve the value for the given key.
@@ -324,10 +323,10 @@ func (lbase *Logbase) Get(keystr string) (val []byte, err error) {
 	return
 }
 
-func (lbase *Logbase) NewLiveLog() error {
+func (lbase *Logbase) NewLiveLog() *Logbase {
     lbase.livelog.CloseAll()
     lfile, err := lbase.OpenLogfile(lbase.livelog.fnum + 1)
-    if err != nil {return err}
+    if err != nil {return lbase.SetErr(err)}
     lbase.livelog = lfile
-    return nil
+    return lbase
 }

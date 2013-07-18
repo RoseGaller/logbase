@@ -37,11 +37,35 @@ func NewDebugLogger(level int, writers []io.Writer) *DebugLogger {
     return &DebugLogger{level, writers}
 }
 
-// Make a default DebugLogger writing to the screen and a file.
-func MakeDebugLogger() *DebugLogger{
-    file, err := OpenFile(DEBUG_FILENAME)
+// Return a default DebugLogger writing to the screen and a file.
+func ScreenFileLogger(fname string) *DebugLogger{
+    writers := []io.Writer{
+               os.Stdout,
+               FileDebugWriter(fname)}
+    return MakeLogger(writers)
+}
+
+// Return a default DebugLogger writing to the screen only.
+func ScreenLogger() *DebugLogger{
+    writers := []io.Writer{os.Stdout}
+    return MakeLogger(writers)
+}
+
+// Return a DebugLogger with no writers.
+func NilLogger() *DebugLogger{
+    writers := []io.Writer{}
+    return MakeLogger(writers)
+}
+
+// Return a file debug logger writer using the given fname.
+func FileDebugWriter(fname string) io.Writer {
+    file, err := OpenFile(fname)
 	if err != nil {WrapError("Could not open debug log: ", err).Fatal()}
-    writers := []io.Writer{os.Stdout, file}
+    return file
+}
+
+// Return a default DebugLogger using the given writers.
+func MakeLogger(writers []io.Writer) *DebugLogger {
     level := DebugLevels["BASIC"]
     debug := NewDebugLogger(level, writers)
     debug.Advise("Debug logger started")
@@ -57,7 +81,7 @@ func DebugLevelName(level int) string {
 }
 
 // Allow the debug level to be changed on the fly.
-func (debug *DebugLogger) SetLevel(levelstr string) {
+func (debug *DebugLogger) SetLevel(levelstr string) *DebugLogger {
     oldname := DebugLevelName(debug.level)
     newname := strings.ToUpper(levelstr)
     level, ok := DebugLevels[newname]
@@ -66,7 +90,7 @@ func (debug *DebugLogger) SetLevel(levelstr string) {
     debug.Advise(fmt.Sprintf(
           "Debug level changed from %q to %q",
           oldname, newname))
-    return
+    return debug
 }
 
 // Writes the debug message.  Any error encountered results in app termination.
@@ -100,26 +124,40 @@ func (debug *DebugLogger) Println(msg string) *DebugLogger {
 }
 
 // Output debug message as long as current level is at least FINE.
-func (debug *DebugLogger) Fine(msg string) *DebugLogger {
-    if debug.level >= DEBUGLEVEL_FINE {debug.output(stamp(msg, "FINE"))}
+func (debug *DebugLogger) Fine(msg string, a ...interface{}) *DebugLogger {
+    if debug.level >= DEBUGLEVEL_FINE {
+        debug.output(stamp(
+            fmt.Sprintf(msg, a...),
+            "FINE"))
+    }
     return debug
 }
 
 // Output debug message as long as current level is at least BASIC.
-func (debug *DebugLogger) Basic(msg string) *DebugLogger {
-    if debug.level >= DEBUGLEVEL_BASIC {debug.output(stamp(msg, "BASIC"))}
+func (debug *DebugLogger) Basic(msg string, a ...interface{}) *DebugLogger {
+    if debug.level >= DEBUGLEVEL_BASIC {
+        debug.output(stamp(
+            fmt.Sprintf(msg, a...),
+            "BASIC"))
+    }
     return debug
 }
 
 // Output debug message as long as current level is at least ADVISE.
-func (debug *DebugLogger) Advise(msg string) *DebugLogger {
-    if debug.level >= DEBUGLEVEL_ADVISE {debug.output(stamp(msg, "ADVISE"))}
+func (debug *DebugLogger) Advise(msg string, a ...interface{}) *DebugLogger {
+    if debug.level >= DEBUGLEVEL_ADVISE {
+        debug.output(stamp(
+            fmt.Sprintf(msg, a...),
+            "ADVISE"))
+    }
     return debug
 }
 
 // Issue warning to debug output.
-func (debug *DebugLogger) Warn(msg string) *DebugLogger {
-    debug.output(stamp(msg, "WARNING"))
+func (debug *DebugLogger) Warn(msg string, a ...interface{}) *DebugLogger {
+    debug.output(stamp(
+        fmt.Sprintf(msg, a...),
+        "WARNING"))
     return debug
 }
 

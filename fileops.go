@@ -159,11 +159,10 @@ func (lbase *Logbase) OpenLogfile(fnum LBUINT) (lfile *Logfile, err error) {
 // If a livelog is not defined for the given logbase, open the last
 // indexed log file in the logbase, designated as the live log,
 // for read/write access.
-func (lbase *Logbase) SetLiveLog() (err error) {
+func (lbase *Logbase) SetLiveLog() *Logbase {
     if lbase.livelog == nil {
-        var inds []LBUINT
-        _, inds, err = lbase.GetLogfilePaths()
-        if err != nil {return}
+        _, inds, err := lbase.GetLogfilePaths()
+        if err != nil {return lbase.SetErr(err)}
 
         var lfile *Logfile
         if len(inds) == 0 {
@@ -172,10 +171,10 @@ func (lbase *Logbase) SetLiveLog() (err error) {
             var last int = len(inds) - 1
             lfile, err = lbase.OpenLogfile(inds[last])
         }
-        if err != nil {return}
+        if err != nil {return lbase.SetErr(err)}
         lbase.livelog = lfile
     }
-    return
+    return lbase
 }
 
 // Assemble a list of all log files in the current logbase, sorted by index.
