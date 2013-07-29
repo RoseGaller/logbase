@@ -77,7 +77,7 @@ const (
 
 // The basic unit of a logbase.
 type Logfile struct {
-	*Gofile
+	*File
     fnum        LBUINT // log file number
     indexfile   *Indexfile // index for this logfile
 }
@@ -85,72 +85,76 @@ type Logfile struct {
 // Init a Logfile.
 func NewLogfile() *Logfile {
 	return &Logfile{
-        Gofile: &Gofile{},
+        File: &File{},
         indexfile: NewIndexfile(),
     }
 }
 
 // Speed up initialisation of the master catalog.
 type Indexfile struct {
-    *Gofile
+    *File
     *Index
 }
 
 // Init an Indexfile.
 func NewIndexfile() *Indexfile {
 	return &Indexfile{
-        Gofile: &Gofile{},
+        File: &File{},
         Index: &Index{},
     }
 }
 
 // Allow persistence of master catalog.
 type Masterfile struct {
-    *Gofile
+    *File
     *MasterCatalog
 }
 
 // Init a Masterfile.
 func NewMasterfile() *Masterfile {
 	return &Masterfile{
-        Gofile: &Gofile{},
+        File: &File{},
         MasterCatalog: NewMasterCatalog(),
     }
 }
 
 // Allow persistence of scheduled kv pair deletion.
 type Zapfile struct {
-    *Gofile
+    *File
     *Zapmap
 }
 
 // Init a Zapfile.
 func NewZapfile() *Zapfile {
 	return &Zapfile{
-        Gofile: &Gofile{},
+        File: &File{},
         Zapmap: NewZapmap(),
     }
 }
 
 // Logbase methods.
 
-// Open a log file and its associated index file for read/write access.
-// If none exist, create each.
-func (lbase *Logbase) OpenLogfile(fnum LBUINT) (lfile *Logfile, err error) {
+// Get a handle on a log file and its associated index file for read/write access.
+// If none exist, create each.  Note that while we keep a register of Files,
+// we do not keep a register of log or index files.
+func (lbase *Logbase) GetLogfile(fnum LBUINT) (lfile *Logfile, err error) {
     fpath := lbase.MakeLogfilePath(fnum)
-    gfile, err := lbase.OpenGofile(fpath)
+    var file *File
+    file, err = lbase.GetFile(fpath)
     if err != nil {return}
 
     lfile = NewLogfile()
-    lfile.Gofile = gfile
+    lfile.File = file
     lfile.path = fpath
     lfile.fnum = fnum
 
+    // Identify index file
     ipath := lbase.MakeIndexfilePath(fnum)
-    gfile, err = lbase.OpenGofile(ipath)
+    file, err = lbase.GetFile(ipath)
 
+    // Link it to 
     lfif := NewIndexfile()
-    lfif.Gofile = gfile
+    lfif.File = file
     lfile.indexfile = lfif
 
     return
@@ -166,13 +170,14 @@ func (lbase *Logbase) SetLiveLog() *Logbase {
 
         var lfile *Logfile
         if len(inds) == 0 {
-            lfile, err = lbase.OpenLogfile(STARTING_LOGFILE_NUMBER)
+            lfile, err = lbase.GetLogfile(STARTING_LOGFILE_NUMBER)
         } else {
             var last int = len(inds) - 1
-            lfile, err = lbase.OpenLogfile(inds[last])
+            lfile, err = lbase.GetLogfile(inds[last])
         }
         if err != nil {return lbase.SetErr(err)}
         lbase.livelog = lfile
+        lbase.debug.Fine(DEBUG_DEFAULT, "Set livelog as %q", lfile.path)
     }
     return lbase
 }
@@ -193,16 +198,14 @@ func (lbase *Logbase) GetLogfilePaths() (fpaths []string, uinds32 []LBUINT, err 
             return err
         }
 
-        nscan++
         if nscan > 0 && stat.IsDir() {
             return filepath.SkipDir
         }
-        parts := strings.Split(fpath, FILENAME_DELIMITER)
+        nscan++
+        parts := strings.Split(filepath.Base(fpath), FILENAME_DELIMITER)
         if len(parts) == 2 && parts[1] == lbase.config.LOGFILE_NAME_EXTENSION {
             num64, err := strconv.ParseInt(parts[0], 10, 32)
-            if err != nil {
-                return err
-            }
+            if err != nil {return WrapError("Problem interpreting path", err)}
 
             numint := int(num64)
             if reflect.ValueOf(numint).OverflowInt(num64) {
@@ -245,7 +248,7 @@ func (lbase *Logbase) MakeLogfilePath(fnum LBUINT) string {
 func (lbase *Logbase) MakeIndexfilePath(fnum LBUINT) string {
     return path.Join(
         lbase.path,
-        MakeIndexfileName(fnum, lbase.config.LOGFILE_NAME_EXTENSION))
+        MakeIndexfileName(fnum, lbase.config.INDEXFILE_NAME_EXTENSION))
 }
 
 // File name related functions.
@@ -267,13 +270,6 @@ func MakeIndexfileName(fnum LBUINT, ext string) string {
 }
 
 // Log file methods, that may include associated index file ops.
-
-// Close the log file and associated index file.
-func (lfile *Logfile) CloseAll() error {
-    err := lfile.Close()
-    if err != nil {return err}
-    return lfile.indexfile.Close()
-}
 
 // Index the given log file.
 func (lfile *Logfile) Index() (*Index, error) {
@@ -306,6 +302,8 @@ func (lfile *Logfile) Load() ([][]byte, [][]byte, error) {
 // both in-memory and on file.  Does not update the master catalog or
 // zapmap.
 func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) {
+    lfile.Open()
+    defer lfile.Close()
     pos, _ := lfile.JumpFromEnd(0)
 	_, err = lfile.LockedWriteAt(lrec.Pack(), pos)
     if err != nil {return}
@@ -319,6 +317,8 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
     lfile.indexfile.list = append(lfile.indexfile.list, *irec)
 
     // Write the index record to the index file
+    lfile.indexfile.Open()
+    defer lfile.indexfile.Close()
     pos, _ = lfile.indexfile.JumpFromEnd(0)
 	_, err = lfile.indexfile.LockedWriteAt(irec.Pack(), pos)
 	return
@@ -326,6 +326,8 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
 
 // Read a value from the log file.
 func (lfile *Logfile) ReadVal(vpos, vsz LBUINT) ([]byte, error) {
+    lfile.Open()
+    defer lfile.Close()
 	return lfile.LockedReadAt(vpos, vsz, "value")
 }
 
@@ -356,6 +358,8 @@ func (ifile *Indexfile) Save(lfindex *Index) (err error) {
         pos = pos.plus(nwrite)
     }
     */
+    ifile.Open()
+    defer ifile.Close()
     irsz := int(ParamSize(NewIndexRecord()))
     bytes := make([]byte, len(lfindex.list) * irsz)
     var start int = 0
@@ -385,6 +389,8 @@ func (zfile *Zapfile) Read() (*Zapmap, error) {
 
 // Write zapmap file.
 func (zfile *Zapfile) Write(zm *Zapmap) error {
+    zfile.Open()
+    defer zfile.Close()
     var nwrite int
     var err error
     var pos LBUINT = 0
@@ -412,6 +418,8 @@ func (mfile *Masterfile) Read() (*MasterCatalog, error) {
 
 // Write master catalog file.
 func (mfile *Masterfile) Write(mcat *MasterCatalog) error {
+    mfile.Open()
+    defer mfile.Close()
     var err error
     var pos LBUINT = 0
     for keystr, mcr := range mcat.index {
@@ -424,21 +432,19 @@ func (mfile *Masterfile) Write(mcat *MasterCatalog) error {
 // Read the log file (given by the index) and build an associated index file.
 func (lbase *Logbase) RefreshIndexfile(fnum LBUINT) (lfindex *Index, err error) {
     var lfile *Logfile
-    lfile, err = lbase.OpenLogfile(fnum)
+    lfile, err = lbase.GetLogfile(fnum)
     if err != nil {return}
     lfindex, err = lfile.Index()
     if err != nil {return}
     err = lfile.indexfile.Save(lfindex)
-    lfile.CloseAll()
     return
 }
 
 // Read the log file (given by the index) and build an associated index file.
 func (lbase *Logbase) ReadIndexfile(fnum LBUINT) (lfindex *Index, err error) {
     var lfile *Logfile
-    lfile, err = lbase.OpenLogfile(fnum)
+    lfile, err = lbase.GetLogfile(fnum)
     if err != nil {return}
     lfindex, err = lfile.indexfile.Load()
-    lfile.CloseAll()
     return
 }

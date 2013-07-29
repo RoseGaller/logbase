@@ -246,6 +246,25 @@ func (rec *GenericRecord) ToMasterCatalogRecord() *MasterCatalogRecord {
     return mcr
 }
 
+// Return string representation of an IndexRecord.
+func (irec *IndexRecord) String() string {
+    return fmt.Sprintf(
+        "(%d,%d,%d,%q)",
+        irec.ksz,
+        irec.vsz,
+        irec.vpos,
+        string(irec.key))
+}
+
+// Return string representation of a MasterCatalogRecord.
+func (mcr *MasterCatalogRecord) String() string {
+    return fmt.Sprintf(
+        "(%d,%d,%d)",
+        mcr.fnum,
+        mcr.vsz,
+        mcr.vpos)
+}
+
 // LBUINT related functions.
 
 func (i LBUINT) plus(other int) LBUINT {
@@ -274,7 +293,7 @@ func CanMakeLBUINT(num int64) bool {
 
 // Return the logfile pointed to by the master catalog record.
 func (mcr *MasterCatalogRecord) Logfile(lbase *Logbase) (*Logfile, error) {
-    return lbase.OpenLogfile(mcr.fnum)
+    return lbase.GetLogfile(mcr.fnum)
 }
 
 // Read the value pointed to by the master catalog record.
@@ -313,9 +332,9 @@ func (lrec *LogRecord) Pack() []byte {
 func (irec *IndexRecord) Pack() []byte {
 	bfr := new(bytes.Buffer)
 	binary.Write(bfr, binary.BigEndian, irec.ksz)
+	bfr.Write(irec.key)
 	binary.Write(bfr, binary.BigEndian, irec.vsz)
 	binary.Write(bfr, binary.BigEndian, irec.vpos)
-	bfr.Write(irec.key)
     return bfr.Bytes()
 }
 

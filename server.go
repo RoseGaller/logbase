@@ -67,7 +67,7 @@ func (server *Server) Start() *Server {
             cfgPath, errcfg).Fatal()
     }
     server.Debug.SetLevel(config.DEBUG_LEVEL)
-    server.Debug.Advise("Server id = " + server.Id())
+    server.Debug.Advise(DEBUG_DEFAULT, "Server id = " + server.Id())
     return server
 }
 

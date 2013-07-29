@@ -99,7 +99,7 @@ import (
 type LBUINT uint32 // Unsigned Logbase integer type used on file
 
 const (
-    APPNAME         string = "LOGBASE"
+    APPNAME         string = "Logbase"
     CONFIG_FILENAME string = "logbase.cfg"
     LBUINT_SIZE     LBUINT = 4 // bytes 
     LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
@@ -123,13 +123,19 @@ type Logbase struct {
 
 // Make a new Logbase instance based on the given directory path.
 func MakeLogbase(lbPath string, debug *DebugLogger) *Logbase {
+    lbase := NewLogbase()
+    lbase.name = filepath.Base(lbPath)
+    lbase.path = lbPath
+    lbase.debug = debug
+    return lbase
+}
+
+// Initialise embedded fields.
+func NewLogbase() *Logbase {
 	return &Logbase{
-        name:           filepath.Base(lbPath),
-        path:           lbPath,
 	    FileRegister:   NewFileRegister(),
 	    MasterCatalog:  NewMasterCatalog(),
 	    Zapmap:         NewZapmap(),
-        debug:          debug,
     }
 }
 
@@ -205,9 +211,7 @@ func (lbase *Logbase) HasLiveLog() bool {
 // Execute an orderly shutdown including finalisation of index and
 // zap files.
 func (lbase *Logbase) Close() *Logbase {
-	if lbase.HasLiveLog() {
-		lbase.err = lbase.livelog.file.Close()
-	}
+    // TODO update indexes
 	return lbase
 }
 
@@ -216,6 +220,7 @@ func (lbase *Logbase) Close() *Logbase {
 // append the old master catalog record into a "zapmap" which schedules stale
 // data for deletion.
 func (lbase *Logbase) Init() *Logbase {
+    lbase.debug.Fine(DEBUG_DEFAULT, "Commence init of logbase %q", lbase.name)
     // Make dir if it does not exist
     err := os.MkdirAll(lbase.path, DEFAULT_FILEMODE)
 	if err != nil {return lbase.SetErr(err)}
@@ -231,35 +236,38 @@ func (lbase *Logbase) Init() *Logbase {
     // Get logfile list
     fpaths, fnums, err := lbase.GetLogfilePaths()
     if err != nil {return lbase.SetErr(err)}
+    lbase.debug.Fine(DEBUG_DEFAULT, "fpaths = %v", fpaths)
 
+    // Iterate through all log files
     var refresh bool
     for i, fnum := range fnums {
+        lbase.debug.Fine(DEBUG_DEFAULT, "Scan log file %d index", fnum)
         refresh = false
         ipath := lbase.MakeIndexfilePath(fnum)
         istat, err := os.Stat(ipath)
-        if os.IsNotExist(err) {
+        if os.IsNotExist(err) || istat.Size() == 0 {
             refresh = true
         } else if err != nil {
             return lbase.SetErr(err)
-        } else {
-            if istat.Size() == 0 {
-                if fstat, _ := os.Stat(fpaths[i]); fstat.Size() > 0 {
-                    // The log file is not empty, so the index file
-                    // should not be empty
-                    refresh = true
-                }
-            }
         }
-        if refresh {
-            lbase.RefreshIndexfile(fnum)
-        } else {
-            lbase.ReadIndexfile(fnum)
+        fstat, err2 := os.Stat(fpaths[i])
+        if err2 != nil {return lbase.SetErr(err2)}
+        if fstat.Size() > 0 {
+            if refresh {
+                lbase.debug.Fine(DEBUG_DEFAULT, "Refreshing index file %s", ipath)
+                lbase.RefreshIndexfile(fnum)
+            } else {
+                lbase.debug.Fine(DEBUG_DEFAULT, "Reading index file %s", ipath)
+                lbase.ReadIndexfile(fnum)
+            }
         }
         if lbase.err != nil {return lbase}
     }
 
     // Initialise livelog
-	return lbase.SetLiveLog()
+    result := lbase.SetLiveLog()
+    lbase.debug.Fine(DEBUG_DEFAULT, "Completed init of logbase %q", lbase.name)
+    return result
 }
 
 // Update the master catalog map with an index record (usually) generated from
@@ -288,7 +296,7 @@ func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) *Logbase {
 
 // Save the key-value pair in the live log.
 func (lbase *Logbase) Put(keystr string, val []byte) *Logbase {
-    lbase.debug.Fine(
+    lbase.debug.Fine(DEBUG_DEFAULT,
         "Putting (%s,[%d]byte) into logbase %q",
         keystr, len(val), lbase.name)
 	if lbase.HasLiveLog() {
@@ -324,8 +332,7 @@ func (lbase *Logbase) Get(keystr string) (val []byte, err error) {
 }
 
 func (lbase *Logbase) NewLiveLog() *Logbase {
-    lbase.livelog.CloseAll()
-    lfile, err := lbase.OpenLogfile(lbase.livelog.fnum + 1)
+    lfile, err := lbase.GetLogfile(lbase.livelog.fnum + 1)
     if err != nil {return lbase.SetErr(err)}
     lbase.livelog = lfile
     return lbase
