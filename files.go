@@ -9,6 +9,8 @@ import (
 	"os"
     "io"
     "bytes"
+    "path"
+    "path/filepath"
     //"bufio"
     "encoding/binary"
     "sync"
@@ -31,10 +33,11 @@ var fileCounter int = 0 // for debugging only
 type File struct {
     id      int
 	gofile  *os.File
-    path    string // path name used to open file
+    abspath string // path name used to open file
     rwmu    *sync.RWMutex
     debug   *DebugLogger
-    isOpen  bool // Its ok to have multiple opens of same gofile
+    isOpen  bool // its ok to have multiple opens of same gofile
+    size    int // size in bytes
 }
 
 func NewFile() *File {
@@ -55,25 +58,26 @@ func NewFileRegister() *FileRegister {
 }
 
 // Open a new or existing File for read/write access.
-func (lbase *Logbase) GetFile(fpath string) (file *File, err error) {
+func (lbase *Logbase) GetFile(relpath string) (file *File, err error) {
+    fpath := path.Join(lbase.abspath, relpath)
     // Use existing File if present
-    file, present := lbase.files[fpath]
+    file, present := lbase.freg.files[fpath]
     if present {return}
 
     file = NewFile()
     file.id = fileCounter
     fileCounter++
-    file.path = fpath
+    file.abspath = fpath
     file.debug = lbase.debug
-    lbase.files[fpath] = file
+    lbase.freg.files[fpath] = file
 
     err = file.Touch()
 	return
 }
 
-func OpenFile(path string) (gfile *os.File, err error) {
+func OpenFile(abspath string) (gfile *os.File, err error) {
     return os.OpenFile(
-        path,
+        abspath,
         os.O_CREATE |
         os.O_APPEND |
         os.O_RDWR,
@@ -83,7 +87,7 @@ func OpenFile(path string) (gfile *os.File, err error) {
 // A tailored file opener for full create/append/rw.
 func (file *File) Open() (err error) {
     var gfile *os.File
-    gfile, err = OpenFile(file.path)
+    gfile, err = OpenFile(file.abspath)
     if err == nil {
         file.gofile = gfile
         file.isOpen = true
@@ -97,9 +101,22 @@ func (file *File) Close() (err error) {
     return
 }
 
-// If file does not exist, create it.
+// Return file path relative to the logbase path.
+func (file *File) RelPath(lbase *Logbase) string {
+    result, err := filepath.Rel(lbase.abspath, file.abspath)
+    if err != nil {
+        WrapError(fmt.Sprint(
+            "Could not extract a relative path using basepath %q " +
+            "and targetpath %q",
+            lbase.abspath,
+            file.abspath), err).Fatal()
+    }
+    return result
+}
+
+// If file does not exist, create it.  Updates file size.
 func (file *File) Touch() error {
-    _, err := os.Stat(file.path)
+    info, err := os.Stat(file.abspath)
     if os.IsNotExist(err) {
         err2 := file.Open()
         if err2 == nil {
@@ -107,7 +124,12 @@ func (file *File) Touch() error {
         } else {
             return err2
         }
-    } else if err != nil {return err}
+        file.size = 0
+    } else if err != nil {
+        return err
+    } else {
+        file.size = int(info.Size())
+    }
     return nil
 }
 
@@ -243,7 +265,7 @@ func (file *File) LockedReadAt(pos, size LBUINT, desc string) (bytes []byte, err
 	if err != nil {return}
 
 	if LBUINT(nread) != size {
-        err = FmtErrDataSize(desc, file.path, size, nread)
+        err = FmtErrDataSize(desc, file.abspath, size, nread)
 	}
     return
 }
@@ -274,6 +296,6 @@ func (file *File) String() string {
         "%v %d %s %v",
         &file,
         file.id,
-        file.path,
+        file.abspath,
         file.rwmu)
 }

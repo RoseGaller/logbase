@@ -125,29 +125,43 @@ func NewIndexRecordHeader() *IndexRecordHeader {
 }
 
 // Define a record used in the logbase master key index.
-type MasterCatalogRecord struct {
+type ValueLocationRecord struct {
     fnum    LBUINT // log files indexed sequentially from 0
     *Vsize
     *Vpos
 }
 
-// Init a MasterCatalogRecord.
-func NewMasterCatalogRecord() *MasterCatalogRecord {
-	return &MasterCatalogRecord{
+// Init a ValueLocationRecord.
+func NewValueLocationRecord() *ValueLocationRecord {
+	return &ValueLocationRecord{
         Vsize: &Vsize{},
         Vpos: &Vpos{},
     }
 }
 
-// For in-memory use, initially replicates a master catalog record.
-type ZapRecord struct {
-    *MasterCatalogRecord
+// Define a record used in the logbase master key index.
+type MasterCatalogRecord struct {
+    *ValueLocationRecord
 }
 
-// Init a ZapRecord.
+// Init a MasterCatalogRecord, with flexibility to differentiate from a
+// ValueLocationRecord.
+func NewMasterCatalogRecord() *MasterCatalogRecord {
+	return &MasterCatalogRecord{
+        ValueLocationRecord: NewValueLocationRecord(),
+    }
+}
+
+// For in-memory use, initially replicates a master catalog record.
+type ZapRecord struct {
+    *ValueLocationRecord
+}
+
+// Init a ZapRecord, with flexibility to differentiate from a
+// ValueLocationRecord.
 func NewZapRecord() *ZapRecord {
 	return &ZapRecord{
-        MasterCatalogRecord: NewMasterCatalogRecord(),
+        ValueLocationRecord: NewValueLocationRecord(),
     }
 }
 
@@ -155,20 +169,55 @@ func NewZapRecord() *ZapRecord {
 var GenericValueSize = map[int]LBUINT{
     LOG_RECORD:     0,
     INDEX_RECORD:   ValSizePosBytes(),
-    MASTER_RECORD:  MasterRecordBytes(),
+    MASTER_RECORD:  ValueLocationRecordBytes(),
     ZAP_RECORD:     0,
 }
 
 func ValSizePosBytes() LBUINT {return LBUINT_SIZE_x2}
-func MasterRecordBytes() LBUINT {return LBUINT_SIZE_x3}
-func ZapRecordBytes() LBUINT {return MasterRecordBytes()}
+func ValueLocationRecordBytes() LBUINT {return LBUINT_SIZE_x3}
 
 // Data container methods.
 
-func (mcr *MasterCatalogRecord) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
-    mcr.fnum = fnum
-    mcr.vsz = irec.vsz
-    mcr.vpos = irec.vpos
+
+// Returns the number of ValueLocationRecords in GenericRecord value,
+// unless a partial record is detected, which is fatal.
+func (rec *GenericRecord) LocationListLength() int {
+    vlocsize := ValueLocationRecordBytes()
+    n := rec.vsz/vlocsize
+    rem := rec.vsz - n * vlocsize
+    if rem != 0 {FmtErrPartialLocationData(vlocsize, rec.vsz).Fatal()}
+    return int(n)
+}
+
+// Comparison.
+
+// Compare for equivalence.
+func (mcr *MasterCatalogRecord) SameAs(zrec *ZapRecord) bool {
+    return (mcr.fnum == zrec.fnum &&
+        mcr.vsz == zrec.vsz &&
+        mcr.vpos == zrec.vpos)
+}
+
+// Compare for equality.
+func (mcr *MasterCatalogRecord) Equals(other *MasterCatalogRecord) bool {
+    return (mcr.fnum == other.fnum &&
+        mcr.vsz == other.vsz &&
+        mcr.vpos == other.vpos)
+}
+
+// Compare for equality.
+func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
+    return (zrec.fnum == other.fnum &&
+        zrec.vsz == other.vsz &&
+        zrec.vpos == other.vpos)
+}
+
+// Interchanges.
+
+func (vlr *ValueLocationRecord) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
+    vlr.fnum = fnum
+    vlr.vsz = irec.vsz
+    vlr.vpos = irec.vpos
 }
 
 func (zrec *ZapRecord) FromMasterCatalogRecord(mcr *MasterCatalogRecord) {
@@ -212,29 +261,19 @@ func (lrec *LogRecord) ToIndexRecord() *IndexRecord {
 }
 
 // Map GenericRecord to a new ZapRecord list.
-func (rec *GenericRecord) ToZapRecordList() (string, []ZapRecord) {
+func (rec *GenericRecord) ToZapRecordList() (string, []*ZapRecord) {
     var keystr string = string(rec.key)
-    n := rec.ZapLen()
+    n := rec.LocationListLength()
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
-    var zrecs = make([]ZapRecord, n)
+    var zrecs = make([]*ZapRecord, n)
     for i := 0; i < n; i++ {
+        zrecs[i] = NewZapRecord()
 	    binary.Read(bfr, binary.BigEndian, &zrecs[i].fnum)
 	    binary.Read(bfr, binary.BigEndian, &zrecs[i].vsz)
 	    binary.Read(bfr, binary.BigEndian, &zrecs[i].vpos)
     }
     return keystr, zrecs
 }
-
-// Returns the number of ZapRecords in GenericRecord value, unless a partial
-// zap record is detected, which is fatal.
-func (rec *GenericRecord) ZapLen() int {
-    zrecsize := ParamSize(NewZapRecord())
-    n := rec.vsz/zrecsize
-    rem := rec.vsz - n * zrecsize
-    if rem != 0 {FmtErrPartialZapData(zrecsize, rec.vsz).Fatal()}
-    return int(n)
-}
-
 // Map GenericRecord to a new MasterLogRecord.
 func (rec *GenericRecord) ToMasterCatalogRecord() *MasterCatalogRecord {
     mcr := NewMasterCatalogRecord()
@@ -244,6 +283,19 @@ func (rec *GenericRecord) ToMasterCatalogRecord() *MasterCatalogRecord {
 	binary.Read(bfr, binary.BigEndian, &mcr.vsz)
 	binary.Read(bfr, binary.BigEndian, &mcr.vpos)
     return mcr
+}
+
+// Formatted output.
+
+// Return string representation of a GenericRecord for debugging.
+func (rec *GenericRecord) String() string {
+    return fmt.Sprintf(
+        "(ksz %d, vsz %d, key %q, val %q, vpos %d)",
+        rec.ksz,
+        rec.vsz,
+        string(rec.key),
+        string(rec.val),
+        rec.vpos)
 }
 
 // Return string representation of an IndexRecord.
@@ -263,6 +315,15 @@ func (mcr *MasterCatalogRecord) String() string {
         mcr.fnum,
         mcr.vsz,
         mcr.vpos)
+}
+
+// Return string representation of a ZapRecord.
+func (zrec *ZapRecord) String() string {
+    return fmt.Sprintf(
+        "(%d,%d,%d)",
+        zrec.fnum,
+        zrec.vsz,
+        zrec.vpos)
 }
 
 // LBUINT related functions.
@@ -339,11 +400,11 @@ func (irec *IndexRecord) Pack() []byte {
 }
 
 // Return a buffer with a zapmap record packed ready for file writing.
-func PackZapRecord(keystr string, zrecs []ZapRecord) []byte {
+func PackZapRecord(keystr string, zrecs []*ZapRecord) []byte {
 	bfr := new(bytes.Buffer)
 	key := []byte(keystr)
     ksz := AsLBUINT(len(key))
-    n := AsLBUINT(len(zrecs))
+    n := AsLBUINT(len(zrecs)) * ValueLocationRecordBytes()
 	binary.Write(bfr, binary.BigEndian, ksz)
 	binary.Write(bfr, binary.BigEndian, n)
 	bfr.Write(key)
@@ -358,6 +419,10 @@ func PackZapRecord(keystr string, zrecs []ZapRecord) []byte {
 // Return a buffer with a master catalog record packed ready for file writing.
 func PackMasterRecord(keystr string, mcr *MasterCatalogRecord) []byte {
 	bfr := new(bytes.Buffer)
+	key := []byte(keystr)
+    ksz := AsLBUINT(len(key))
+	binary.Write(bfr, binary.BigEndian, ksz)
+	bfr.Write(key)
 	binary.Write(bfr, binary.BigEndian, mcr.fnum)
 	binary.Write(bfr, binary.BigEndian, mcr.vsz)
 	binary.Write(bfr, binary.BigEndian, mcr.vpos)

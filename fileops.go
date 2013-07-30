@@ -57,7 +57,6 @@ package logbase
 
 import (
 	"os"
-    "path"
     "path/filepath"
     "strings"
     "strconv"
@@ -70,8 +69,6 @@ const (
     FILENAME_DELIMITER      string = "."
     LOGFILE_NAME_FORMAT     string = "%09d"
     INDEX_FILE_EXTENSION    string = ".index"
-    MASTER_INDEX_FILENAME   string = "master"
-    ZAPMAP_FILENAME         string = "zapmap"
     STARTING_LOGFILE_NUMBER LBUINT = 1
 )
 
@@ -107,28 +104,24 @@ func NewIndexfile() *Indexfile {
 // Allow persistence of master catalog.
 type Masterfile struct {
     *File
-    *MasterCatalog
 }
 
 // Init a Masterfile.
-func NewMasterfile() *Masterfile {
+func NewMasterfile(file *File) *Masterfile {
 	return &Masterfile{
-        File: &File{},
-        MasterCatalog: NewMasterCatalog(),
+        File: file,
     }
 }
 
 // Allow persistence of scheduled kv pair deletion.
 type Zapfile struct {
     *File
-    *Zapmap
 }
 
 // Init a Zapfile.
-func NewZapfile() *Zapfile {
+func NewZapfile(file *File) *Zapfile {
 	return &Zapfile{
-        File: &File{},
-        Zapmap: NewZapmap(),
+        File: file,
     }
 }
 
@@ -138,18 +131,17 @@ func NewZapfile() *Zapfile {
 // If none exist, create each.  Note that while we keep a register of Files,
 // we do not keep a register of log or index files.
 func (lbase *Logbase) GetLogfile(fnum LBUINT) (lfile *Logfile, err error) {
-    fpath := lbase.MakeLogfilePath(fnum)
+    fpath := lbase.MakeLogfileRelPath(fnum)
     var file *File
     file, err = lbase.GetFile(fpath)
     if err != nil {return}
 
     lfile = NewLogfile()
     lfile.File = file
-    lfile.path = fpath
     lfile.fnum = fnum
 
     // Identify index file
-    ipath := lbase.MakeIndexfilePath(fnum)
+    ipath := lbase.MakeIndexfileRelPath(fnum)
     file, err = lbase.GetFile(ipath)
 
     // Link it to 
@@ -177,7 +169,7 @@ func (lbase *Logbase) SetLiveLog() *Logbase {
         }
         if err != nil {return lbase.SetErr(err)}
         lbase.livelog = lfile
-        lbase.debug.Fine(DEBUG_DEFAULT, "Set livelog as %q", lfile.path)
+        lbase.debug.Fine(DEBUG_DEFAULT, "Set livelog as %q", lfile.abspath)
     }
     return lbase
 }
@@ -220,7 +212,7 @@ func (lbase *Logbase) GetLogfilePaths() (fpaths []string, uinds32 []LBUINT, err 
         return
     }
 
-    err = filepath.Walk(lbase.path, scanner)
+    err = filepath.Walk(lbase.abspath, scanner)
     if err != nil {
         return nil, nil, err
     }
@@ -238,17 +230,23 @@ func (lbase *Logbase) GetLogfilePaths() (fpaths []string, uinds32 []LBUINT, err 
 }
 
 // Return the log file path associated with given the log file number.
-func (lbase *Logbase) MakeLogfilePath(fnum LBUINT) string {
-    return path.Join(
-        lbase.path,
-        MakeLogfileName(fnum, lbase.config.LOGFILE_NAME_EXTENSION))
+func (lbase *Logbase) MakeLogfileRelPath(fnum LBUINT) string {
+    return MakeLogfileName(fnum, lbase.config.LOGFILE_NAME_EXTENSION)
 }
 
 // Return the index file path associated with given the log file number.
-func (lbase *Logbase) MakeIndexfilePath(fnum LBUINT) string {
-    return path.Join(
-        lbase.path,
-        MakeIndexfileName(fnum, lbase.config.INDEXFILE_NAME_EXTENSION))
+func (lbase *Logbase) MakeIndexfileRelPath(fnum LBUINT) string {
+    return MakeIndexfileName(fnum, lbase.config.INDEXFILE_NAME_EXTENSION)
+}
+
+// Save the master catalog and zapmap files for the logbase.
+func (lbase *Logbase) Save() (err error) {
+    err = lbase.mcat.Save()
+    if err != nil {return}
+    err = lbase.zmap.Save()
+    if err != nil {return}
+    lbase.debug.Advise(DEBUG_DEFAULT, "Saved master catalog and zapmap for logbase %q", lbase.name)
+    return
 }
 
 // File name related functions.
@@ -276,7 +274,7 @@ func (lfile *Logfile) Index() (*Index, error) {
     index := new(Index)
     f := func(rec *GenericRecord) error {
         irec := rec.ToLogRecord().ToIndexRecord()
-        index.list = append(index.list, *irec)
+        index.list = append(index.list, irec)
         return nil
     }
     err := lfile.Process(f, LOG_RECORD, true)
@@ -305,7 +303,9 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
     lfile.Open()
     defer lfile.Close()
     pos, _ := lfile.JumpFromEnd(0)
-	_, err = lfile.LockedWriteAt(lrec.Pack(), pos)
+    var nwrite int
+	nwrite, err = lfile.LockedWriteAt(lrec.Pack(), pos)
+    lfile.size += nwrite
     if err != nil {return}
 
     // Create a new file index record
@@ -314,13 +314,14 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
 	irec.vpos = pos + hsz + irec.ksz
 
     // Update the in-memory file index
-    lfile.indexfile.list = append(lfile.indexfile.list, *irec)
+    lfile.indexfile.list = append(lfile.indexfile.list, irec)
 
     // Write the index record to the index file
     lfile.indexfile.Open()
     defer lfile.indexfile.Close()
     pos, _ = lfile.indexfile.JumpFromEnd(0)
-	_, err = lfile.indexfile.LockedWriteAt(irec.Pack(), pos)
+	nwrite, err = lfile.indexfile.LockedWriteAt(irec.Pack(), pos)
+    lfile.indexfile.size += nwrite
 	return
 }
 
@@ -338,7 +339,7 @@ func (ifile *Indexfile) Load() (lfindex *Index, err error) {
     lfindex = new(Index)
     f := func(rec *GenericRecord) error {
         irec := rec.ToIndexRecord()
-        lfindex.list = append(lfindex.list, *irec)
+        lfindex.list = append(lfindex.list, irec)
         return nil
     }
     err = ifile.Process(f, INDEX_RECORD, false)
@@ -348,16 +349,6 @@ func (ifile *Indexfile) Load() (lfindex *Index, err error) {
 // Write index file.
 // TODO would it be faster to build a []byte and write once?
 func (ifile *Indexfile) Save(lfindex *Index) (err error) {
-    /*
-    var nwrite int
-    var err error
-    var pos LBUINT = 0
-    for i, rec := range lfindex.list {
-	    nwrite, err = ifile.LockedWriteAt(rec.Pack(), pos)
-        if err != nil {return err}
-        pos = pos.plus(nwrite)
-    }
-    */
     ifile.Open()
     defer ifile.Close()
     irsz := int(ParamSize(NewIndexRecord()))
@@ -376,75 +367,84 @@ func (ifile *Indexfile) Save(lfindex *Index) (err error) {
 // Zapmap file methods.
 
 // Read zap file into a zapmap.
-func (zfile *Zapfile) Read() (*Zapmap, error) {
-    zm := NewZapmap()
+func (zmap *Zapmap) Load() (err error) {
+    zmap.file.Open()
+    defer zmap.file.Close()
     f := func(rec *GenericRecord) error {
         keystr, zrecs := rec.ToZapRecordList()
-        zm.zapmap[keystr] = zrecs
+        zmap.zapmap[keystr] = zrecs
         return nil
     }
-    err := zfile.Process(f, ZAP_RECORD, true)
-    return zm, err
+    err = zmap.file.Process(f, ZAP_RECORD, true)
+    return
 }
 
 // Write zapmap file.
-func (zfile *Zapfile) Write(zm *Zapmap) error {
-    zfile.Open()
-    defer zfile.Close()
+func (zmap *Zapmap) Save() (err error) {
+    zmap.file.Open()
+    defer zmap.file.Close()
     var nwrite int
-    var err error
     var pos LBUINT = 0
-    for keystr, zrecs := range zm.zapmap {
-	    nwrite, err = zfile.LockedWriteAt(PackZapRecord(keystr, zrecs), pos)
-        if err != nil {return err}
+    for keystr, zrecs := range zmap.zapmap {
+	    nwrite, err = zmap.file.LockedWriteAt(PackZapRecord(keystr, zrecs), pos)
+        if err != nil {return}
         pos = pos.plus(nwrite)
     }
-    return nil
+    return
 }
 
 // Master index file methods.
 
 // Read master catalog file into a new master catalog.
-func (mfile *Masterfile) Read() (*MasterCatalog, error) {
-    mcat := NewMasterCatalog()
+func (mcat *MasterCatalog) Load() (err error) {
+    mcat.file.Open()
+    defer mcat.file.Close()
     f := func(rec *GenericRecord) error {
         mcr := rec.ToMasterCatalogRecord()
         mcat.index[string(rec.key)] = mcr
         return nil
     }
-    err := mfile.Process(f, MASTER_RECORD, false)
-    return mcat, err
+    err = mcat.file.Process(f, MASTER_RECORD, false)
+    return
 }
 
 // Write master catalog file.
-func (mfile *Masterfile) Write(mcat *MasterCatalog) error {
-    mfile.Open()
-    defer mfile.Close()
-    var err error
+func (mcat *MasterCatalog) Save() (err error) {
+    mcat.file.Open()
+    defer mcat.file.Close()
     var pos LBUINT = 0
     for keystr, mcr := range mcat.index {
-	    _, err = mfile.LockedWriteAt(PackMasterRecord(keystr, mcr), pos)
-        if err != nil {return err}
+	    _, err = mcat.file.LockedWriteAt(PackMasterRecord(keystr, mcr), pos)
+        if err != nil {return}
     }
-    return err
-}
-
-// Read the log file (given by the index) and build an associated index file.
-func (lbase *Logbase) RefreshIndexfile(fnum LBUINT) (lfindex *Index, err error) {
-    var lfile *Logfile
-    lfile, err = lbase.GetLogfile(fnum)
-    if err != nil {return}
-    lfindex, err = lfile.Index()
-    if err != nil {return}
-    err = lfile.indexfile.Save(lfindex)
     return
 }
 
 // Read the log file (given by the index) and build an associated index file.
-func (lbase *Logbase) ReadIndexfile(fnum LBUINT) (lfindex *Index, err error) {
-    var lfile *Logfile
-    lfile, err = lbase.GetLogfile(fnum)
-    if err != nil {return}
+func (lbase *Logbase) RefreshIndexfile(fnum LBUINT) (lfindex *Index) {
+    lfile, err := lbase.GetLogfile(fnum)
+    if err != nil {
+        lbase.SetErr(err)
+        return
+    }
+    lfindex, err = lfile.Index()
+    if err != nil {
+        lbase.SetErr(err)
+        return
+    }
+    err = lfile.indexfile.Save(lfindex)
+    if err != nil {lbase.SetErr(err)}
+    return
+}
+
+// Read the log file (given by the index) and build an associated index file.
+func (lbase *Logbase) ReadIndexfile(fnum LBUINT) (lfindex *Index) {
+    lfile, err := lbase.GetLogfile(fnum)
+    if err != nil {
+        lbase.SetErr(err)
+        return
+    }
     lfindex, err = lfile.indexfile.Load()
+    if err != nil {lbase.SetErr(err)}
     return
 }

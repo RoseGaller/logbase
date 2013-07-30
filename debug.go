@@ -165,7 +165,7 @@ func (debug *DebugLogger) Println(msg string) *DebugLogger {
 // Output debug message as long as current level is at least FINE.
 func (debug *DebugLogger) Fine(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
     if debug.level >= DEBUGLEVEL_FINE {
-        debug.messageHandler(msgConfig, msg, a...)
+        debug.messageHandler(msgConfig, DEBUGLEVEL_FINE, msg, a...)
     }
     return debug
 }
@@ -173,7 +173,7 @@ func (debug *DebugLogger) Fine(msgConfig *DebugMessageConfig, msg string, a ...i
 // Output debug message as long as current level is at least BASIC.
 func (debug *DebugLogger) Basic(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
     if debug.level >= DEBUGLEVEL_BASIC {
-        debug.messageHandler(msgConfig, msg, a...)
+        debug.messageHandler(msgConfig, DEBUGLEVEL_BASIC, msg, a...)
     }
     return debug
 }
@@ -181,23 +181,23 @@ func (debug *DebugLogger) Basic(msgConfig *DebugMessageConfig, msg string, a ...
 // Output debug message as long as current level is at least ADVISE.
 func (debug *DebugLogger) Advise(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
     if debug.level >= DEBUGLEVEL_ADVISE {
-        debug.messageHandler(msgConfig, msg, a...)
+        debug.messageHandler(msgConfig, DEBUGLEVEL_ADVISE, msg, a...)
     }
     return debug
 }
 
 // A common handler for the debug message methods. Use of a DebugMessageConfig
 // struct offers scope to enhance message functionality in the future.
-func (debug *DebugLogger) messageHandler(msgConfig *DebugMessageConfig, msg string, a ...interface{}) {
+func (debug *DebugLogger) messageHandler(msgConfig *DebugMessageConfig, level int, msg string, a ...interface{}) {
     var out string
-    var level string = DebugLevelName[debug.level]
+    var levelstr string = DebugLevelName[level]
     switch msgConfig.callerDetail {
     case CALLER_NIL:
-        out = stamp(fmt.Sprintf(msg, a...), level)
+        out = stamp(fmt.Sprintf(msg, a...), levelstr)
     case CALLER_FUNC:
-        out = stamp(fmt.Sprintf(CaptureCaller(3).fn + ": " + msg, a...), level)
+        out = stamp(fmt.Sprintf(CaptureCaller(3).fn + ": " + msg, a...), levelstr)
     case CALLER_FULL:
-        out = stamp(fmt.Sprintf(CaptureCaller(3).String() + ": " + msg, a...), level)
+        out = stamp(fmt.Sprintf(CaptureCaller(3).String() + ": " + msg, a...), levelstr)
     }
     debug.output(out)
     return

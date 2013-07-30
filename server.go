@@ -8,10 +8,13 @@ import (
     "encoding/hex"
     "path"
     "github.com/h00gs/toml"
+    //"bufio"
+    "encoding/binary"
+    "fmt"
 )
 
 const (
-    ID_LENGTH               int = 10 // Should be divisible by 2
+    ID_LENGTH               uint64 = 10 // Should be divisible by 2
     SERVER_CONFIG_FILENAME  string = "logbase_server.cfg"
     DEBUG_FILENAME          string = "debug.log"
 )
@@ -24,7 +27,7 @@ type Server struct {
 
 func NewServer() *Server {
     return &Server{
-        id:         GenerateRandomHexStr(ID_LENGTH),
+        id:         GenerateRandomHexStrings(1, ID_LENGTH, ID_LENGTH)[0],
         logbases:   make(map[string]*Logbase),
         Debug:      ScreenFileLogger(DEBUG_FILENAME),
     }
@@ -83,15 +86,29 @@ func (server *Server) Open(lbPath string) *Logbase {
     return lbase.Init()
 }
 
-// Generate a random id.
+// Generate a slice of random hex strings of random length within the given
+// range of lengths.
 // Credit to Russ Cox https://groups.google.com/forum/#!topic/golang-nuts/d0nF_k4dSx4
 // for the idea of using /dev/urandom.
 // TODO check cross compatibility of /dev/urandom
-func GenerateRandomHexStr(length int) string {
+func GenerateRandomHexStrings(n, minsize, maxsize uint64) (result []string) {
     frnd, _ := os.OpenFile("/dev/urandom", os.O_RDONLY, 0)
-    rnd := make([]byte, length/2)
-    frnd.Read(rnd)
-    frnd.Close()
-    return hex.EncodeToString(rnd)
+    defer frnd.Close()
+
+    maxuint := float64(^uint64(0))
+    rng := float64(maxsize - minsize)
+    if rng <= 0 {
+        ErrNew(fmt.Sprintf("maxsize %d must be >= minsize %d", maxsize, minsize)).Fatal()
+    }
+    var adjlen, rawlen uint64
+    result = make([]string, n)
+    for i := 0; i < int(n); i++ {
+        binary.Read(frnd, binary.BigEndian, &rawlen)
+        adjlen = uint64(float64(rawlen)*rng/maxuint) + minsize
+        rndval := make([]byte, int(adjlen)/2)
+        frnd.Read(rndval)
+        result[i] = hex.EncodeToString(rndval)
+    }
+    return
 }
 

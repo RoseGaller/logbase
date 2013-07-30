@@ -26,7 +26,7 @@ func (err *AppError) Fatal()  {
 // Deliberately private function, to fix the number of jumps
 // from the caller.
 func makeAppError() *AppError {
-    return &AppError{caller: CaptureCaller(2)}
+    return &AppError{caller: CaptureCaller(4)}
 }
 
 // Produce a string to satisfy error interface.
@@ -112,9 +112,9 @@ func FmtErrDataSize(desc, path string, size LBUINT, nread int) *AppError {
         desc, path, size, nread))
 }
 
-func FmtErrPartialZapData(size, nread LBUINT) *AppError {
+func FmtErrPartialLocationData(size, nread LBUINT) *AppError {
     return ErrDataSize(fmt.Sprintf(
-        "A ZapRecord has %d bytes but the GenericRecord read " +
+        "A ValueLocationRecord has %d bytes but the GenericRecord read " +
         "%d bytes, so some data must be missing",
         size, nread))
 }
