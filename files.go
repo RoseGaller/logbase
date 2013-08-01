@@ -1,6 +1,6 @@
 /*
-    Define a wrapper around an operating system file, including its methods.
-    This forms part of the "IO read infrastructure" which consists of the GenericRecord container, the Process and ReadRecord functions here, and the various processor functions elsewhere.  When there are lots of processor functions, this approach simplifies the logic and reduces code duplication, but there is double handling of record data in each processor which is not optimal.
+    Define a wrapper around an operating system file, including its methods, for use in this and other applications.
+    This forms part of an "IO read infrastructure" which consists of the GenericRecord container, the Process and ReadRecord functions here, and the various processor functions elsewhere.  When there are lots of processor functions, this approach simplifies the logic and reduces code duplication, but there is double handling of record data in each processor which is not optimal.
     A File wraps an os.File with some other properties, including locks.  This locking requires that we maintain a map of file paths to Files, and that an existing File be used if available when opening a file.
 */
 package logbase
@@ -75,7 +75,7 @@ func (lbase *Logbase) GetFile(relpath string) (file *File, err error) {
 	return
 }
 
-func OpenFile(abspath string) (gfile *os.File, err error) {
+func OpenFile(abspath string) (*os.File, error) {
     return os.OpenFile(
         abspath,
         os.O_CREATE |
@@ -91,14 +91,26 @@ func (file *File) Open() (err error) {
     if err == nil {
         file.gofile = gfile
         file.isOpen = true
+        info, err2 := os.Stat(file.abspath)
+        if err2 != nil {
+            err = err2
+            return
+        }
+        file.size = int(info.Size())
     }
     return
 }
 
+// Close file for IO.
 func (file *File) Close() (err error) {
     err = file.gofile.Close()
     if err == nil {file.isOpen = false}
     return
+}
+
+// Delete file.
+func (file *File) Remove() (err error) {
+    return os.Remove(file.abspath)
 }
 
 // Return file path relative to the logbase path.

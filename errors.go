@@ -65,7 +65,7 @@ func ErrNew(msg string) *AppError {
 func FmtErrIntMismatch(num64 int64, path string, byA string, num int) *AppError {
     return ErrIntMismatch(fmt.Sprintf(
         "The index %d extracted from log file %q cannot be " +
-        "properly represented by a %s, result is %d",
+        "properly represented by a %s, result is %d.",
         num64, path, byA, num))
 }
 
@@ -76,17 +76,27 @@ func ErrIntMismatch(msg string) *AppError {
 // Key not found.
 
 func FmtErrKeyNotFound(keystr string) *AppError {
-    return ErrKeyNotFound(fmt.Sprintf("Key %q not found", keystr))
+    return ErrKeyNotFound(fmt.Sprintf("Key %q not found.", keystr))
 }
 
 func ErrKeyNotFound(msg string) *AppError {
     return makeAppError().Describe(msg, "key_not_found")
 }
 
+// Key collision.
+
+func FmtErrKeyExists(keystr string) *AppError {
+    return ErrKeyExists(fmt.Sprintf("Key %q already exists.", keystr))
+}
+
+func ErrKeyExists(msg string) *AppError {
+    return makeAppError().Describe(msg, "key_exists")
+}
+
 // Value not found.
 
 func FmtErrValNotFound(valstr string) *AppError {
-    return ErrValNotFound(fmt.Sprintf("Value %q not found", valstr))
+    return ErrValNotFound(fmt.Sprintf("Value %q not found.", valstr))
 }
 
 func ErrValNotFound(msg string) *AppError {
@@ -96,7 +106,7 @@ func ErrValNotFound(msg string) *AppError {
 // File not found.
 
 func FmtErrFileNotFound(path string) *AppError {
-    return ErrFileNotFound(fmt.Sprintf("File %q not found", path))
+    return ErrFileNotFound(fmt.Sprintf("File %q not found.", path))
 }
 
 func ErrFileNotFound(msg string) *AppError {
@@ -108,14 +118,20 @@ func ErrFileNotFound(msg string) *AppError {
 func FmtErrDataSize(desc, path string, size LBUINT, nread int) *AppError {
     return ErrDataSize(fmt.Sprintf(
         "Invalid %s size while reading record for file %q. " +
-        "Expected %d got %d bytes",
+        "Expected %d got %d bytes.",
         desc, path, size, nread))
+}
+
+func FmtErrPositionExceedsFileSize(path string, pos, size int) *AppError {
+    return ErrDataSize(fmt.Sprintf(
+        "The position %d for file %q exceeds the file size %d.",
+        pos, path, size))
 }
 
 func FmtErrPartialLocationData(size, nread LBUINT) *AppError {
     return ErrDataSize(fmt.Sprintf(
         "A ValueLocationRecord has %d bytes but the GenericRecord read " +
-        "%d bytes, so some data must be missing",
+        "%d bytes, so some data must be missing.",
         size, nread))
 }
 

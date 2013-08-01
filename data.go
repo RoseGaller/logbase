@@ -50,9 +50,19 @@ type Vsize struct {
     vsz     LBUINT
 }
 
-// Position of value in a log file.
+// Position of value in file.
 type Vpos struct {
     vpos    LBUINT
+}
+
+// Record size in bytes.
+type Rsize struct {
+    rsz     LBUINT
+}
+
+// Position of record in file.
+type Rpos struct {
+    rpos    LBUINT
 }
 
 // Provide a generic record file for "IO read infrastructure".
@@ -124,44 +134,58 @@ func NewIndexRecordHeader() *IndexRecordHeader {
     }
 }
 
-// Define a record used in the logbase master key index.
-type ValueLocationRecord struct {
+// Define the location and size of a value.
+type ValueLocation struct {
     fnum    LBUINT // log files indexed sequentially from 0
     *Vsize
     *Vpos
 }
 
-// Init a ValueLocationRecord.
-func NewValueLocationRecord() *ValueLocationRecord {
-	return &ValueLocationRecord{
+// Init a ValueLocation.
+func NewValueLocation() *ValueLocation {
+	return &ValueLocation{
         Vsize: &Vsize{},
         Vpos: &Vpos{},
     }
 }
 
+// Define the location and size of a record.
+type RecordLocation struct {
+    fnum    LBUINT // log files indexed sequentially from 0
+    *Rsize
+    *Rpos
+}
+
+// Init a RecordLocation.
+func NewRecordLocation() *RecordLocation {
+	return &RecordLocation{
+        Rsize: &Rsize{},
+        Rpos: &Rpos{},
+    }
+}
+
 // Define a record used in the logbase master key index.
 type MasterCatalogRecord struct {
-    *ValueLocationRecord
+    *ValueLocation
 }
 
 // Init a MasterCatalogRecord, with flexibility to differentiate from a
 // ValueLocationRecord.
 func NewMasterCatalogRecord() *MasterCatalogRecord {
 	return &MasterCatalogRecord{
-        ValueLocationRecord: NewValueLocationRecord(),
+        ValueLocation: NewValueLocation(),
     }
 }
 
-// For in-memory use, initially replicates a master catalog record.
+// Identify a logfile record for zapping.
 type ZapRecord struct {
-    *ValueLocationRecord
+    *RecordLocation
 }
 
-// Init a ZapRecord, with flexibility to differentiate from a
-// ValueLocationRecord.
+// Init a ZapRecord.
 func NewZapRecord() *ZapRecord {
 	return &ZapRecord{
-        ValueLocationRecord: NewValueLocationRecord(),
+        RecordLocation: NewRecordLocation(),
     }
 }
 
@@ -169,20 +193,20 @@ func NewZapRecord() *ZapRecord {
 var GenericValueSize = map[int]LBUINT{
     LOG_RECORD:     0,
     INDEX_RECORD:   ValSizePosBytes(),
-    MASTER_RECORD:  ValueLocationRecordBytes(),
+    MASTER_RECORD:  ValueLocationBytes(),
     ZAP_RECORD:     0,
 }
 
 func ValSizePosBytes() LBUINT {return LBUINT_SIZE_x2}
-func ValueLocationRecordBytes() LBUINT {return LBUINT_SIZE_x3}
+func ValueLocationBytes() LBUINT {return LBUINT_SIZE_x3}
+func RecordLocationBytes() LBUINT {return LBUINT_SIZE_x3}
 
 // Data container methods.
-
 
 // Returns the number of ValueLocationRecords in GenericRecord value,
 // unless a partial record is detected, which is fatal.
 func (rec *GenericRecord) LocationListLength() int {
-    vlocsize := ValueLocationRecordBytes()
+    vlocsize := ValueLocationBytes()
     n := rec.vsz/vlocsize
     rem := rec.vsz - n * vlocsize
     if rem != 0 {FmtErrPartialLocationData(vlocsize, rec.vsz).Fatal()}
@@ -190,13 +214,6 @@ func (rec *GenericRecord) LocationListLength() int {
 }
 
 // Comparison.
-
-// Compare for equivalence.
-func (mcr *MasterCatalogRecord) SameAs(zrec *ZapRecord) bool {
-    return (mcr.fnum == zrec.fnum &&
-        mcr.vsz == zrec.vsz &&
-        mcr.vpos == zrec.vpos)
-}
 
 // Compare for equality.
 func (mcr *MasterCatalogRecord) Equals(other *MasterCatalogRecord) bool {
@@ -208,29 +225,30 @@ func (mcr *MasterCatalogRecord) Equals(other *MasterCatalogRecord) bool {
 // Compare for equality.
 func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
     return (zrec.fnum == other.fnum &&
-        zrec.vsz == other.vsz &&
-        zrec.vpos == other.vpos)
+        zrec.rsz == other.rsz &&
+        zrec.rpos == other.rpos)
 }
 
 // Interchanges.
 
-func (vlr *ValueLocationRecord) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
-    vlr.fnum = fnum
-    vlr.vsz = irec.vsz
-    vlr.vpos = irec.vpos
+func (vl *ValueLocation) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
+    vl.fnum = fnum
+    vl.vsz = irec.vsz
+    vl.vpos = irec.vpos
 }
 
-func (zrec *ZapRecord) FromMasterCatalogRecord(mcr *MasterCatalogRecord) {
+func (zrec *ZapRecord) FromMasterCatalogRecord(keystr string, mcr *MasterCatalogRecord) {
     zrec.fnum = mcr.fnum
-    zrec.vsz = mcr.vsz
-    zrec.vpos = mcr.vpos
+    rsz, rpos := mcr.LogRecordSizePosition(keystr)
+    zrec.rsz = rsz
+    zrec.rpos = rpos
 }
 
 // Map GenericRecord to a new LogRecord.
 func (rec *GenericRecord) ToLogRecord() *LogRecord {
     lrec := NewLogRecord()
     lrec.ksz = rec.ksz
-    lrec.vsz = rec.vsz - ParamSize(lrec.crc)
+    lrec.vsz = rec.vsz - CRC_SIZE
     lrec.key = rec.key
     // Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
@@ -269,8 +287,8 @@ func (rec *GenericRecord) ToZapRecordList() (string, []*ZapRecord) {
     for i := 0; i < n; i++ {
         zrecs[i] = NewZapRecord()
 	    binary.Read(bfr, binary.BigEndian, &zrecs[i].fnum)
-	    binary.Read(bfr, binary.BigEndian, &zrecs[i].vsz)
-	    binary.Read(bfr, binary.BigEndian, &zrecs[i].vpos)
+	    binary.Read(bfr, binary.BigEndian, &zrecs[i].rsz)
+	    binary.Read(bfr, binary.BigEndian, &zrecs[i].rpos)
     }
     return keystr, zrecs
 }
@@ -322,8 +340,8 @@ func (zrec *ZapRecord) String() string {
     return fmt.Sprintf(
         "(%d,%d,%d)",
         zrec.fnum,
-        zrec.vsz,
-        zrec.vpos)
+        zrec.rsz,
+        zrec.rpos)
 }
 
 // LBUINT related functions.
@@ -379,7 +397,7 @@ func MakeLogRecord(keystr string, val []byte) *LogRecord {
 func (lrec *LogRecord) Pack() []byte {
 	bfr := new(bytes.Buffer)
 	binary.Write(bfr, binary.BigEndian, lrec.ksz)
-	binary.Write(bfr, binary.BigEndian, lrec.vsz + ParamSize(lrec.crc))
+	binary.Write(bfr, binary.BigEndian, lrec.vsz + CRC_SIZE)
 	bfr.Write(lrec.key)
 	bfr.Write(lrec.val)
 
@@ -404,14 +422,14 @@ func PackZapRecord(keystr string, zrecs []*ZapRecord) []byte {
 	bfr := new(bytes.Buffer)
 	key := []byte(keystr)
     ksz := AsLBUINT(len(key))
-    n := AsLBUINT(len(zrecs)) * ValueLocationRecordBytes()
+    n := AsLBUINT(len(zrecs)) * ValueLocationBytes()
 	binary.Write(bfr, binary.BigEndian, ksz)
 	binary.Write(bfr, binary.BigEndian, n)
 	bfr.Write(key)
     for _, zrec := range zrecs {
 	    binary.Write(bfr, binary.BigEndian, zrec.fnum)
-	    binary.Write(bfr, binary.BigEndian, zrec.vsz)
-	    binary.Write(bfr, binary.BigEndian, zrec.vpos)
+	    binary.Write(bfr, binary.BigEndian, zrec.rsz)
+	    binary.Write(bfr, binary.BigEndian, zrec.rpos)
     }
     return bfr.Bytes()
 }
@@ -429,6 +447,26 @@ func PackMasterRecord(keystr string, mcr *MasterCatalogRecord) []byte {
     return bfr.Bytes()
 }
 
+// Size calculations.
+
+// Use reflection to find the byte size of any parameter, as an LBUINT.
 func ParamSize(param interface{}) LBUINT {
     return LBUINT(reflect.TypeOf(param).Size())
+}
+
+// MasterCatalogRecords do not explicitely hold the start position and length
+// of an entire logfile record, just the value, but along with the key we have
+// enough to figure this out.
+func (mcr *MasterCatalogRecord) LogRecordSizePosition(keystr string) (size, pos LBUINT) {
+    ksz := AsLBUINT(len(keystr))
+    size = LBUINT_SIZE_x2 + ksz + mcr.vsz + CRC_SIZE
+    pos = mcr.vpos - ksz - LBUINT_SIZE_x2
+    return
+}
+
+// Return the number of whole buffers that divide the chunk, and any remainder.
+func DivideChunkByBuffer(chunksize, buffersize LBUINT) (n, rem LBUINT) {
+    n = chunksize / buffersize
+    rem = chunksize - n * buffersize
+    return
 }

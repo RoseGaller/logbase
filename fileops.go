@@ -1,5 +1,5 @@
 /*
-    File IO and management.
+    File IO and management specific to this application.
 
     Legend
     ------
@@ -13,6 +13,8 @@
     VP      Value position
     F       File number
     C       Checksum
+    RS      (Entire) Record size
+    RP      (Entire) Record position
 
     GENERIC RECORD (used in ReadRecord)
     +------+------+------+------+------+------+------+------+
@@ -48,7 +50,7 @@
     ZAPMAP FILE RECORD (ZAP_RECORD)
     +------+------+------+------+------+------+------+------+------+------+
     |      |      |             |      :      :      |      :      :      |
-    |  KS  |  GVS |      K      |  F   :  VS  :  VP  |  F   :  VS  :  VP  |
+    |  KS  |  GVS |      K      |  F   :  RS  :  RP  |  F   :  RS  :  RP  |
     |      |      |             |      :      :      |      :      :      |
     +------+------+------+------+------+------+------+------+------+------+
                                 |<------------------- GV ---------------->|
@@ -57,6 +59,8 @@ package logbase
 
 import (
 	"os"
+    "io"
+    "path"
     "path/filepath"
     "strings"
     "strconv"
@@ -70,6 +74,7 @@ const (
     LOGFILE_NAME_FORMAT     string = "%09d"
     INDEX_FILE_EXTENSION    string = ".index"
     STARTING_LOGFILE_NUMBER LBUINT = 1
+    TMPFILE_PREFIX          string = ".tmp."
 )
 
 // The basic unit of a logbase.
@@ -155,10 +160,10 @@ func (lbase *Logbase) GetLogfile(fnum LBUINT) (lfile *Logfile, err error) {
 // If a livelog is not defined for the given logbase, open the last
 // indexed log file in the logbase, designated as the live log,
 // for read/write access.
-func (lbase *Logbase) SetLiveLog() *Logbase {
+func (lbase *Logbase) SetLiveLog() error {
     if lbase.livelog == nil {
         _, inds, err := lbase.GetLogfilePaths()
-        if err != nil {return lbase.SetErr(err)}
+        if err != nil {return err}
 
         var lfile *Logfile
         if len(inds) == 0 {
@@ -167,11 +172,11 @@ func (lbase *Logbase) SetLiveLog() *Logbase {
             var last int = len(inds) - 1
             lfile, err = lbase.GetLogfile(inds[last])
         }
-        if err != nil {return lbase.SetErr(err)}
+        if err != nil {return err}
         lbase.livelog = lfile
         lbase.debug.Fine(DEBUG_DEFAULT, "Set livelog as %q", lfile.abspath)
     }
-    return lbase
+    return nil
 }
 
 // Assemble a list of all log files in the current logbase, sorted by index.
@@ -240,12 +245,33 @@ func (lbase *Logbase) MakeIndexfileRelPath(fnum LBUINT) string {
 }
 
 // Save the master catalog and zapmap files for the logbase.
-func (lbase *Logbase) Save() (err error) {
-    err = lbase.mcat.Save()
+func (lbase *Logbase) Save() error {
+    if err := lbase.mcat.Save(); err != nil {return err}
+    if err := lbase.zmap.Save(); err != nil {return err}
+    lbase.debug.Advise(
+        DEBUG_DEFAULT,
+        "Saved master catalog and zapmap for logbase %q",
+        lbase.name)
+    return nil
+}
+
+// Read the log file (given by the index) and build an associated index file.
+func (lbase *Logbase) RefreshIndexfile(fnum LBUINT) (lfindex *Index, err error) {
+    var lfile *Logfile
+    lfile, err = lbase.GetLogfile(fnum)
     if err != nil {return}
-    err = lbase.zmap.Save()
+    lfindex, err = lfile.Index()
     if err != nil {return}
-    lbase.debug.Advise(DEBUG_DEFAULT, "Saved master catalog and zapmap for logbase %q", lbase.name)
+    err = lfile.indexfile.Save(lfindex)
+    return
+}
+
+// Read the log file (given by the index) and build an associated index file.
+func (lbase *Logbase) ReadIndexfile(fnum LBUINT) (lfindex *Index, err error) {
+    var lfile *Logfile
+    lfile, err = lbase.GetLogfile(fnum)
+    if err != nil {return}
+    lfindex, err = lfile.indexfile.Load()
     return
 }
 
@@ -330,6 +356,114 @@ func (lfile *Logfile) ReadVal(vpos, vsz LBUINT) ([]byte, error) {
     lfile.Open()
     defer lfile.Close()
 	return lfile.LockedReadAt(vpos, vsz, "value")
+}
+
+// Zap stale values from the logfile, by copying the file to a tmp file while
+// ignoring stale records as defined by the given Zapmap.
+func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
+    lfile.debug.Fine(DEBUG_DEFAULT, "Zapping %s", lfile.abspath)
+    // Extract all zaprecords for this file and build a map between the logfile
+    // record positions -> record size.
+    sz := make(map[int]LBUINT)
+    var rposi []int // Allows us to sort the size map by rpos using int
+    for _, zrecs := range zmap.zapmap {
+        for _, zrec := range zrecs {
+            if zrec.fnum == lfile.fnum {
+                _, exists := sz[int(zrec.rpos)]
+                if exists {
+                    return FmtErrKeyExists(string(zrec.rpos))
+                }
+                sz[int(zrec.rpos)] = zrec.rsz
+                rposi = append(rposi, int(zrec.rpos))
+            }
+        }
+    }
+
+    if len(rposi) == 0 {
+        lfile.debug.Fine(DEBUG_DEFAULT, "Nothing to zap")
+        return nil
+    }
+
+    sort.Ints(rposi)
+    rpos := make([]LBUINT, len(rposi))
+    rsz := make([]LBUINT, len(rposi))
+    for i, pos := range rposi {
+        rpos[i] = LBUINT(pos)
+        rsz[i] = sz[pos]
+    }
+    lfile.debug.Fine(DEBUG_DEFAULT, "rpos = %v, rsz = %v", rpos, rsz)
+
+    // Create temporary file.
+    tmppath := path.Join(
+            filepath.Dir(lfile.abspath),
+            TMPFILE_PREFIX + filepath.Base(lfile.abspath))
+    tmp, err := OpenFile(tmppath)
+    if err != nil {return err}
+
+    lfile.Open()
+    last := len(rpos) - 1
+    pos := int(rpos[last] + rsz[last])
+    if pos > lfile.size {
+        return FmtErrPositionExceedsFileSize(lfile.abspath, pos, lfile.size)
+    }
+
+    // Transpose logfile (with gaps) to tmp file
+    var buf []byte // normal buffer
+    var rem LBUINT // remainder buffer
+    var hasRem bool // is there a remainder portion when chunk divided by buf0?
+    var size LBUINT // number of bytes to read/write
+    var n LBUINT // number of buffer lengths returned by BufferChunk, +1 if rem
+    var nextchunk LBUINT // size of next chunk to transpose
+    var kr LBUINT = 0 // read position in logfile
+    var kw LBUINT = 0 // write position in tmp file
+    var j LBUINT
+    for i := 0; i < len(rpos); i++ {
+        // First, we need to determine the chunk that needs to be read
+        nextchunk = rpos[i] - kr
+        if nextchunk > 0 {
+            n, rem = DivideChunkByBuffer(nextchunk, bufsz)
+            hasRem = (rem > 0)
+            if hasRem {n++}
+            size = bufsz
+            for j = 0; j <= n; j++ {
+                if j == n && hasRem { // switch for the remainder portion
+                    size = rem
+                }
+                buf, err = lfile.LockedReadAt(kr, size, "zap buffer read")
+                if err == io.EOF && j < n {
+                    return WrapError(fmt.Sprintf(
+                        "Premature EOF after attempting to read %d bytes at " +
+                        "position %d in file %q",
+                        size, kr, lfile.abspath), err)
+                }
+                if err != nil {
+                    return WrapError(fmt.Sprintf(
+                        "Attempted to read %d bytes at position %d in file %q",
+                        size, kr, lfile.abspath), err)
+                }
+                _, err = tmp.WriteAt(buf, int64(kw))
+                if err != nil {
+                    return WrapError(fmt.Sprintf(
+                        "Attempted to write %d bytes at position %d in file %q",
+                        size, kw, tmppath), err)
+                }
+            }
+        }
+
+        kr = kr + rpos[i] + rsz[i]
+    }
+
+    lfile.Close()
+    tmp.Close()
+
+    if kw > 0 {
+        if err = lfile.Remove(); err != nil {return err}
+        if err = os.Rename(tmppath, lfile.abspath); err != nil {return err}
+    } else {
+        if err = os.Remove(tmppath); err != nil {return err}
+    }
+
+    return nil
 }
 
 // Log file index file methods.
@@ -420,31 +554,3 @@ func (mcat *MasterCatalog) Save() (err error) {
     return
 }
 
-// Read the log file (given by the index) and build an associated index file.
-func (lbase *Logbase) RefreshIndexfile(fnum LBUINT) (lfindex *Index) {
-    lfile, err := lbase.GetLogfile(fnum)
-    if err != nil {
-        lbase.SetErr(err)
-        return
-    }
-    lfindex, err = lfile.Index()
-    if err != nil {
-        lbase.SetErr(err)
-        return
-    }
-    err = lfile.indexfile.Save(lfindex)
-    if err != nil {lbase.SetErr(err)}
-    return
-}
-
-// Read the log file (given by the index) and build an associated index file.
-func (lbase *Logbase) ReadIndexfile(fnum LBUINT) (lfindex *Index) {
-    lfile, err := lbase.GetLogfile(fnum)
-    if err != nil {
-        lbase.SetErr(err)
-        return
-    }
-    lfindex, err = lfile.indexfile.Load()
-    if err != nil {lbase.SetErr(err)}
-    return
-}

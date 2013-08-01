@@ -44,11 +44,15 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
     if len(zrecs) != 2 {
 		t.Fatalf("The zapmap should contain precisely 2 entries")
 	}
-    matches := (mcr[0].SameAs(zrecs[0]) && mcr[1].SameAs(zrecs[1]))
+    zrec0 := NewZapRecord()
+    zrec0.FromMasterCatalogRecord(k[pair], mcr[0])
+    zrec1 := NewZapRecord()
+    zrec1.FromMasterCatalogRecord(k[pair], mcr[1])
+    matches := zrec0.Equals(zrecs[0]) && zrec1.Equals(zrecs[1])
     if !matches {
 		t.Fatalf("The zapmap should contain {%s%s} but is instead {%s%s}",
-            mcr[0],
-            mcr[1],
+            zrec0,
+            zrec1,
             zrecs[0],
             zrecs[1])
 	}
@@ -153,18 +157,24 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
     }
 }
 
+// Delete stale data.
+func TestZap(t *testing.T) {
+    lbase.Zap(5)
+}
+
 // SUPPORT FUNCTIONS ==========================================================
 
 // Set up the global test logbase.
-func setupLogbase() *Logbase {
+func setupLogbase() (lb *Logbase) {
     err := os.RemoveAll(lbtest)
 	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
-    lb := MakeLogbase(lbtest, ScreenLogger().SetLevel("BASIC")).Init()
-	if lb.err != nil {
-		WrapError("Could not create test logbase", lb.err).Fatal()
+    lb = MakeLogbase(lbtest, ScreenLogger().SetLevel("FINE"))
+    err = lb.Init()
+	if err != nil {
+		WrapError("Could not create test logbase", err).Fatal()
 	}
     lb.config.LOGFILE_MAXBYTES = 100
-    return lb
+    return
 }
 
 // Dump the file register.

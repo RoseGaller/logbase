@@ -78,12 +78,13 @@ func (server *Server) Id() string {return server.id}
 
 // Open an existing Logbase or create it if necessary, identified by a
 // directory path.
-func (server *Server) Open(lbPath string) *Logbase {
+func (server *Server) Open(lbPath string) (lbase *Logbase, err error) {
     // Use existing Logbase if present
     lbase, present := server.logbases[lbPath]
-    if present {return lbase}
+    if present {return}
     lbase = MakeLogbase(lbPath, server.Debug)
-    return lbase.Init()
+    err = lbase.Init()
+    return
 }
 
 // Generate a slice of random hex strings of random length within the given
