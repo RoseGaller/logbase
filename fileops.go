@@ -246,8 +246,10 @@ func (lbase *Logbase) MakeIndexfileRelPath(fnum LBUINT) string {
 
 // Save the master catalog and zapmap files for the logbase.
 func (lbase *Logbase) Save() error {
-    if err := lbase.mcat.Save(); err != nil {return err}
-    if err := lbase.zmap.Save(); err != nil {return err}
+    err := lbase.mcat.Save()
+    if err != nil {return err}
+    err = lbase.zmap.Save()
+    if err != nil {return err}
     lbase.debug.Advise(
         DEBUG_DEFAULT,
         "Saved master catalog and zapmap for logbase %q",
@@ -309,17 +311,15 @@ func (lfile *Logfile) Index() (*Index, error) {
 
 // Read log file into two slices of raw bytes containing the keys and values
 // respectively.
-func (lfile *Logfile) Load() ([][]byte, [][]byte, error) {
-    var keys [][]byte
-    var vals [][]byte
+func (lfile *Logfile) Load() ([]*LogRecord, error) {
+    var lrecs []*LogRecord
     f := func(rec *GenericRecord) error {
         lrec := rec.ToLogRecord()
-        keys = append(keys, lrec.key)
-        vals = append(vals, lrec.val)
+        lrecs = append(lrecs, lrec)
         return nil
     }
     err := lfile.Process(f, LOG_RECORD, true)
-    return keys, vals, err
+    return lrecs, err
 }
 
 // Append data to log file and append a new index record to the index,
@@ -364,34 +364,13 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
     lfile.debug.Fine(DEBUG_DEFAULT, "Zapping %s", lfile.abspath)
     // Extract all zaprecords for this file and build a map between the logfile
     // record positions -> record size.
-    sz := make(map[int]LBUINT)
-    var rposi []int // Allows us to sort the size map by rpos using int
-    for _, zrecs := range zmap.zapmap {
-        for _, zrec := range zrecs {
-            if zrec.fnum == lfile.fnum {
-                _, exists := sz[int(zrec.rpos)]
-                if exists {
-                    return FmtErrKeyExists(string(zrec.rpos))
-                }
-                sz[int(zrec.rpos)] = zrec.rsz
-                rposi = append(rposi, int(zrec.rpos))
-            }
-        }
-    }
-
-    if len(rposi) == 0 {
-        lfile.debug.Fine(DEBUG_DEFAULT, "Nothing to zap")
+    rpos, rsz, err := zmap.Find(lfile.fnum)
+    if err != nil {return err}
+    if len(rpos) == 0 {
+        lfile.debug.Fine(DEBUG_DEFAULT, " Nothing to zap")
         return nil
     }
-
-    sort.Ints(rposi)
-    rpos := make([]LBUINT, len(rposi))
-    rsz := make([]LBUINT, len(rposi))
-    for i, pos := range rposi {
-        rpos[i] = LBUINT(pos)
-        rsz[i] = sz[pos]
-    }
-    lfile.debug.Fine(DEBUG_DEFAULT, "rpos = %v, rsz = %v", rpos, rsz)
+    lfile.debug.SuperFine(DEBUG_DEFAULT, " zaplists: rpos = %v rsz = %v", rpos, rsz)
 
     // Create temporary file.
     tmppath := path.Join(
@@ -406,59 +385,82 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
     if pos > lfile.size {
         return FmtErrPositionExceedsFileSize(lfile.abspath, pos, lfile.size)
     }
+    lfile.debug.SuperFine(DEBUG_DEFAULT, " file size = %d", lfile.size)
+
+    // Invert the zap lists to make position and size of chunks to preserve
+    cpos, csz := InvertSequence(rpos, rsz, lfile.size)
+    lfile.debug.SuperFine(DEBUG_DEFAULT, " preserve: cpos = %v csz = %v", cpos, csz)
 
     // Transpose logfile (with gaps) to tmp file
     var buf []byte // normal buffer
+    buf0 := make([]byte, int(bufsz))
     var rem LBUINT // remainder buffer
     var hasRem bool // is there a remainder portion when chunk divided by buf0?
     var size LBUINT // number of bytes to read/write
     var n LBUINT // number of buffer lengths returned by BufferChunk, +1 if rem
-    var nextchunk LBUINT // size of next chunk to transpose
-    var kr LBUINT = 0 // read position in logfile
+    var kr LBUINT // read position in logfile
     var kw LBUINT = 0 // write position in tmp file
     var j LBUINT
-    for i := 0; i < len(rpos); i++ {
-        // First, we need to determine the chunk that needs to be read
-        nextchunk = rpos[i] - kr
-        if nextchunk > 0 {
-            n, rem = DivideChunkByBuffer(nextchunk, bufsz)
-            hasRem = (rem > 0)
-            if hasRem {n++}
-            size = bufsz
-            for j = 0; j <= n; j++ {
-                if j == n && hasRem { // switch for the remainder portion
-                    size = rem
-                }
-                buf, err = lfile.LockedReadAt(kr, size, "zap buffer read")
-                if err == io.EOF && j < n {
-                    return WrapError(fmt.Sprintf(
-                        "Premature EOF after attempting to read %d bytes at " +
-                        "position %d in file %q",
-                        size, kr, lfile.abspath), err)
-                }
-                if err != nil {
-                    return WrapError(fmt.Sprintf(
-                        "Attempted to read %d bytes at position %d in file %q",
-                        size, kr, lfile.abspath), err)
-                }
-                _, err = tmp.WriteAt(buf, int64(kw))
-                if err != nil {
-                    return WrapError(fmt.Sprintf(
-                        "Attempted to write %d bytes at position %d in file %q",
-                        size, kw, tmppath), err)
-                }
-            }
-        }
+    var nr int
 
-        kr = kr + rpos[i] + rsz[i]
+    lfile.rwmu.RLock() // other reads ok while we transpose to tmp file
+
+    for i := 0; i < len(cpos); i++ {
+        // First, we need to determine the chunk that needs to be read
+        kr = cpos[i]
+        n, rem = DivideChunkByBuffer(csz[i], bufsz)
+        lfile.debug.SuperFine(
+            DEBUG_DEFAULT,
+            " dividing chunk %d by %d yields n = %d rem = %d",
+            csz[i], bufsz, n, rem)
+        hasRem = (rem > 0)
+        if hasRem {n++}
+        buf = buf0
+        size = bufsz
+        for j = 0; j < n; j++ {
+            if j == n - 1 && hasRem { // switch for the remainder portion
+                buf = make([]byte, rem)
+                size = rem
+            }
+            // Read
+            nr, err = lfile.gofile.ReadAt(buf, int64(kr))
+            buf = buf[0:nr]
+            lfile.debug.SuperFine(
+                DEBUG_DEFAULT,
+                " read = %s err = %v",
+                FmtHexString(buf), err)
+            if err != nil && err != io.EOF {
+                return WrapError(fmt.Sprintf(
+                    "Attempted to read %d bytes at position %d in file %q",
+                    size, kr, lfile.abspath), err)
+            }
+            kr = kr + size
+
+            // Write
+            _, err = tmp.Write(buf) // Only use part of slice if near EOF
+            lfile.debug.SuperFine(
+                DEBUG_DEFAULT,
+                " wrote = %s err = %v",
+                FmtHexString(buf), err)
+            if err != nil {
+                return WrapError(fmt.Sprintf(
+                    "Attempted to write %d bytes at position %d in file %q",
+                    size, kw, tmppath), err)
+            }
+            kw = kw + size
+        }
     }
 
+    lfile.rwmu.RUnlock()
     lfile.Close()
     tmp.Close()
 
     if kw > 0 {
+        lfile.rwmu.Lock()
         if err = lfile.Remove(); err != nil {return err}
         if err = os.Rename(tmppath, lfile.abspath); err != nil {return err}
+        lfile.rwmu.Unlock()
+        zmap.Purge(lfile.fnum, lfile.debug)
     } else {
         if err = os.Remove(tmppath); err != nil {return err}
     }

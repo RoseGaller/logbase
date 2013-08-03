@@ -10,6 +10,8 @@ import (
     "time"
     "strings"
     "runtime"
+    "encoding/hex"
+    "bytes"
 )
 
 const (
@@ -18,14 +20,15 @@ const (
 
 const ( // order important
     DEBUGLEVEL_ADVISE = iota
-    DEBUGLEVEL_BASIC = iota
-    DEBUGLEVEL_FINE = iota
+    DEBUGLEVEL_BASIC
+    DEBUGLEVEL_FINE
+    DEBUGLEVEL_SUPERFINE
 )
 
 const (
     CALLER_NIL = iota
-    CALLER_FUNC = iota
-    CALLER_FULL = iota
+    CALLER_FUNC
+    CALLER_FULL
 )
 
 type DebugMessageConfig struct {
@@ -38,6 +41,7 @@ var DebugLevels = map[string]int{
     "ADVISE": DEBUGLEVEL_ADVISE,
     "BASIC": DEBUGLEVEL_BASIC,
     "FINE": DEBUGLEVEL_FINE,
+    "SUPERFINE": DEBUGLEVEL_SUPERFINE,
 }
 
 // The map is small enough to reverse manually for speed/simplicity
@@ -45,6 +49,7 @@ var DebugLevelName = map[int]string{
     DEBUGLEVEL_ADVISE: "ADVISE",
     DEBUGLEVEL_BASIC: "BASIC",
     DEBUGLEVEL_FINE: "FINE",
+    DEBUGLEVEL_SUPERFINE: "SUPERFINE",
 }
 
 type DebugLogger struct {
@@ -162,6 +167,14 @@ func (debug *DebugLogger) Println(msg string) *DebugLogger {
     return debug.output(msg)
 }
 
+// Output debug message as long as current level is at least SUPERFINE.
+func (debug *DebugLogger) SuperFine(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
+    if debug.level >= DEBUGLEVEL_SUPERFINE {
+        debug.messageHandler(msgConfig, DEBUGLEVEL_SUPERFINE, msg, a...)
+    }
+    return debug
+}
+
 // Output debug message as long as current level is at least FINE.
 func (debug *DebugLogger) Fine(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
     if debug.level >= DEBUGLEVEL_FINE {
@@ -211,4 +224,21 @@ func (debug *DebugLogger) Warn(msg string, a ...interface{}) *DebugLogger {
 // Issue error to debug output.
 func (debug *DebugLogger) Error(err *AppError) *DebugLogger {
     return debug.output(stamp(err.Message(), "ERROR"))
+}
+
+// Format a byte slice as a hex string with spaces.
+func FmtHexString(b []byte) string {
+    h := []byte(hex.EncodeToString(b))
+    var buf bytes.Buffer
+    var c int = 1
+    for i := 0; i < len(h); i = i + 2 {
+        buf.WriteString(" ")
+        buf.Write(h[i:i+2])
+        c++
+        if c == 5 {
+            buf.WriteString(" ")
+            c = 1
+        }
+    }
+    return buf.String()
 }

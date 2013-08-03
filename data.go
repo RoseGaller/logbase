@@ -10,6 +10,7 @@ import (
     "reflect"
     "hash/crc32"
     "fmt"
+    "sort"
 )
 
 const (
@@ -191,10 +192,10 @@ func NewZapRecord() *ZapRecord {
 
 // Used by ReadRecord to read generic (packed) value size.
 var GenericValueSize = map[int]LBUINT{
-    LOG_RECORD:     0,
+    LOG_RECORD:     0, // not used
     INDEX_RECORD:   ValSizePosBytes(),
     MASTER_RECORD:  ValueLocationBytes(),
-    ZAP_RECORD:     0,
+    ZAP_RECORD:     0, // not used
 }
 
 func ValSizePosBytes() LBUINT {return LBUINT_SIZE_x2}
@@ -252,6 +253,7 @@ func (rec *GenericRecord) ToLogRecord() *LogRecord {
     lrec.key = rec.key
     // Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
+    lrec.val = make([]byte, lrec.vsz) // must have fixed size
 	binary.Read(bfr, binary.BigEndian, &lrec.val)
 	binary.Read(bfr, binary.BigEndian, &lrec.crc)
     return lrec
@@ -316,13 +318,24 @@ func (rec *GenericRecord) String() string {
         rec.vpos)
 }
 
+// Return string representation of a GenericRecord for debugging.
+func (lrec *LogRecord) String() string {
+    return fmt.Sprintf(
+        "(%d,%d,%q,%q,%d)",
+        lrec.ksz,
+        lrec.vsz,
+        string(lrec.key),
+        string(lrec.val),
+        lrec.crc)
+}
+
 // Return string representation of an IndexRecord.
 func (irec *IndexRecord) String() string {
     return fmt.Sprintf(
         "(%d,%d,%d,%q)",
         irec.ksz,
-        irec.vsz,
         irec.vpos,
+        irec.vsz,
         string(irec.key))
 }
 
@@ -331,8 +344,8 @@ func (mcr *MasterCatalogRecord) String() string {
     return fmt.Sprintf(
         "(%d,%d,%d)",
         mcr.fnum,
-        mcr.vsz,
-        mcr.vpos)
+        mcr.vpos,
+        mcr.vsz)
 }
 
 // Return string representation of a ZapRecord.
@@ -340,8 +353,8 @@ func (zrec *ZapRecord) String() string {
     return fmt.Sprintf(
         "(%d,%d,%d)",
         zrec.fnum,
-        zrec.rsz,
-        zrec.rpos)
+        zrec.rpos,
+        zrec.rsz)
 }
 
 // LBUINT related functions.
@@ -464,9 +477,111 @@ func (mcr *MasterCatalogRecord) LogRecordSizePosition(keystr string) (size, pos 
     return
 }
 
+// Zapping.
+
 // Return the number of whole buffers that divide the chunk, and any remainder.
 func DivideChunkByBuffer(chunksize, buffersize LBUINT) (n, rem LBUINT) {
     n = chunksize / buffersize
     rem = chunksize - n * buffersize
+    return
+}
+
+// Invert the zap lengths to preserved lengths (chunks) in a data sequence.
+func InvertSequence(zpos, zsz []LBUINT, size int) (pos, sz []LBUINT) {
+    if len(zpos) != len(zsz) {
+        ErrNew(fmt.Sprintf(
+            "Zap position and size slice lengths differ, " +
+            "being %d and %d respectively.",
+            len(zpos), len(zsz))).Fatal()
+    }
+    var p []LBUINT
+    for i, zp := range zpos {
+        p = append(p, zp)
+        p = append(p, zp + zsz[i])
+    }
+    s := AsLBUINT(size)
+    var j int = 1
+    if p[0] != 0 {
+        p = append([]LBUINT{0}, p...)
+        j = 0
+    }
+    if p[len(p) - 1] != s {p = append(p, s)}
+    p = RemoveAdjacentDuplicates(p)
+
+    for ; j < len(p) - 1; j = j + 2 {
+        pos = append(pos, p[j])
+        sz = append(sz, p[j+1] - p[j])
+    }
+    return
+}
+
+// Remove adjacent duplicates from the given slice.
+func RemoveAdjacentDuplicates(a []LBUINT) (b []LBUINT) {
+    var idups []int
+    for i := 1; i < len(a); i++ { // note start from 1
+        if a[i] == a[i-1] {idups = append(idups, []int{i-1,i}...)}
+    }
+    var include bool
+    for i := 0; i < len(a); i++ {
+        include = true
+        for _, j := range idups {if i == j {include = false}}
+        if include {b = append(b, a[i])}
+    }
+    return
+}
+
+// Return "zaplists" for the given logfile number, that is, a slice each for
+// start positions and lengths that must be zapped from the file.  Adjacent
+// lengths are merged, and the results are sorted by position.
+func (zmap *Zapmap) Find(fnum LBUINT) (rpos, rsz []LBUINT, err error) {
+    sz := make(map[int]LBUINT)
+    var rposi []int // Allows us to sort the size map by rpos using int
+    for _, zrecs := range zmap.zapmap {
+        for _, zrec := range zrecs {
+            if zrec.fnum == fnum {
+                _, exists := sz[int(zrec.rpos)]
+                if exists {
+                    err = FmtErrKeyExists(string(zrec.rpos))
+                    return
+                }
+                sz[int(zrec.rpos)] = zrec.rsz
+                rposi = append(rposi, int(zrec.rpos))
+            }
+        }
+    }
+
+    // Sort position and size of data to zap
+    sort.Ints(rposi)
+    rpos = make([]LBUINT, len(rposi))
+    rsz = make([]LBUINT, len(rposi))
+    for i, pos := range rposi {
+        rpos[i] = LBUINT(pos)
+        rsz[i] = sz[pos]
+    }
+
+    return
+}
+
+// Delete all zapmap records associated with the given logfile number.
+func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
+    debug.Basic(DEBUG_DEFAULT, "Purge zapmap of logfile %d entries", fnum)
+    for key, zrecs := range zmap.zapmap {
+        var newzrecs []*ZapRecord // Make a new list to replace old
+        for _, zrec := range zrecs {
+            if zrec.fnum != fnum {
+                newzrecs = append(newzrecs, zrec)
+            } else {
+                debug.Fine(
+                    DEBUG_DEFAULT,
+                    "Deleting %q%s from zapmap",
+                    key, zrec.String())
+            }
+        }
+        if len(newzrecs) == 0 {
+            delete(zmap.zapmap, key)
+        } else {
+            zmap.zapmap[key] = newzrecs
+        }
+    }
     return
 }

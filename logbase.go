@@ -348,8 +348,9 @@ func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
 // Save the key-value pair in the live log.
 func (lbase *Logbase) Put(keystr string, val []byte) error {
     lbase.debug.Fine(DEBUG_DEFAULT,
-        "Putting (%s,[%d]byte) into logbase %q",
-        keystr, len(val), lbase.name)
+        //"Putting (%q,[%d]byte) into logbase %s",
+        "Putting (%q,%q) size (%d,%d) into logbase %s",
+        keystr, string(val), len(keystr), len(val), lbase.name)
 	if lbase.HasLiveLog() {
         aftersize :=
             lbase.livelog.size +
@@ -393,7 +394,6 @@ func (lbase *Logbase) NewLiveLog() error {
 }
 
 func (lbase *Logbase) Zap(bufsz LBUINT) error {
-    // Get logfile list
     _, fnums, err := lbase.GetLogfilePaths()
     if err != nil {return err}
     for _, fnum := range fnums {

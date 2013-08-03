@@ -177,6 +177,33 @@ func (file *File) JumpFromEnd(j LBUINT) (LBUINT, error) {
     return pos, nil
 }
 
+// Dump file bytes in hex format to the debugger.  If finish == 0,
+// go to end of file.
+func (file *File) HexDump(start, finish int) {
+    file.Open()
+    defer file.Close()
+    if finish == 0 || finish > file.size {finish = file.size}
+    if start < 0 {start = 0}
+    if start > finish {
+        FmtErrBadArgs(
+            "start %v must be less than finish %v",
+            start, finish).Fatal()
+    }
+    const bytesPerRow int = 16
+    // Make buffers            
+    for i := start; i < finish; i = i + bytesPerRow {
+        byts, err := file.LockedReadAt(LBUINT(i), LBUINT(bytesPerRow), "hexdump")
+        if err != nil && err != io.EOF {
+            WrapError(fmt.Sprintf(
+                "Problem with %s trying to read %d bytes at position %d",
+                file.abspath, bytesPerRow, i),
+                err).Fatal()
+        }
+        file.debug.Advise(DEBUG_DEFAULT, FmtHexString(byts))
+    }
+    return
+}
+
 // Allow looping through a file to be separated from processing of its
 // records.
 type Processor func(rec *GenericRecord) error
@@ -189,6 +216,9 @@ func (file *File) Process(process Processor, rectype int, needDataVal bool) (err
     var pos LBUINT = 0
 	for {
         rec, pos, err = file.ReadRecord(pos, rectype, needDataVal)
+        file.debug.SuperFine(
+            DEBUG_DEFAULT,
+            "Process generic rec = %v pos = %v err = %v", rec, pos, err)
 	    if err != nil {break}
         err = process(rec)
         if err != nil {break}
@@ -229,6 +259,7 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
     pos += rec.ksz
     file.Goto(pos)
 
+    // Generic Value
     var valsize LBUINT = 0
     if readvsz {
         if readDataVal {valsize = rec.vsz} // otherwise, valsize = 0
@@ -266,32 +297,29 @@ func (file *File) ReadIntoParam(pos, size LBUINT, data interface{}, desc string)
 // position changes.  Also for this reason, we cannot have concurrent reads, and
 // must wait for other read/writes.  The caller must ensure the file is
 // opened and closed.
-func (file *File) LockedReadAt(pos, size LBUINT, desc string) (bytes []byte, err error) {
-	bytes = make([]byte, size)
-	var nread int
-
+func (file *File) LockedReadAt(pos, size LBUINT, desc string) (byts []byte, err error) {
+	byts = make([]byte, size)
+	var nr int
     file.rwmu.RLock() // other reads ok
     // Locked action
-	nread, err = file.gofile.ReadAt(bytes, int64(pos))
+	nr, err = file.gofile.ReadAt(byts, int64(pos))
     file.rwmu.RUnlock()
+    byts = byts[0:nr]
 	if err != nil {return}
 
-	if LBUINT(nread) != size {
-        err = FmtErrDataSize(desc, file.abspath, size, nread)
+	if LBUINT(nr) != size {
+        err = FmtErrDataSize(desc, file.abspath, size, nr)
 	}
     return
 }
 
 // Wait for any locks, set lock, write bytes to file and unlock.
 // The caller is responsible for opening and closing the file.
-func (file *File) LockedWriteAt(bytes []byte, pos LBUINT) (nwrite int, err error) {
-
+func (file *File) LockedWriteAt(byts []byte, pos LBUINT) (nw int, err error) {
     file.rwmu.Lock()
     // Locked action
-	nwrite, err = file.gofile.WriteAt(bytes, int64(pos))
+	nw, err = file.gofile.WriteAt(byts, int64(pos))
     file.rwmu.Unlock()
-    if err != nil {return}
-
     return
 }
 

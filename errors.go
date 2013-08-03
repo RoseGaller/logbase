@@ -113,6 +113,16 @@ func ErrFileNotFound(msg string) *AppError {
     return makeAppError().Describe(msg, "file_not_found")
 }
 
+// Bad argument.
+
+func FmtErrBadArgs(msg string, a ...interface{}) *AppError {
+    return ErrBadArgs(fmt.Sprintf(msg, a...))
+}
+
+func ErrBadArgs(msg string) *AppError {
+    return makeAppError().Describe(msg, "bad_arguments")
+}
+
 // Unexpected data size.
 
 func FmtErrDataSize(desc, path string, size LBUINT, nread int) *AppError {

@@ -6,7 +6,12 @@ import (
     "os"
 )
 
-const lbtest = "test"
+const (
+    lbtest = "test"
+    logfile_maxbytes = 100
+    debug_level = "FINE"
+)
+
 var lbase *Logbase = setupLogbase()
 var k, v []string
 var pair int = 0
@@ -34,12 +39,16 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
     mcr[0] = lbase.mcat.index[k[pair]]
     saveRetrieveKeyValue(k[pair], v[pair], t)
     mcr[1] = lbase.mcat.index[k[pair]]
+    saveRetrieveKeyValue(k[pair+1], v[pair+1], t) // mix up a bit
     saveRetrieveKeyValue(k[pair], v[pair], t)
     mcr[2] = lbase.mcat.index[k[pair]]
     //dumpIndex(lbase.livelog.indexfile)
     dumpMaster()
     dumpZapmap()
-    lbase.Save()
+    err := lbase.Save()
+    if err != nil {
+		t.Fatalf("Problem saving logbase: %s", err)
+	}
     zrecs := lbase.zmap.zapmap[k[pair]]
     if len(zrecs) != 2 {
 		t.Fatalf("The zapmap should contain precisely 2 entries")
@@ -157,9 +166,86 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
     }
 }
 
+// Zap record at start of data sequence.
+func TestZapCalcStart(t *testing.T) {
+    zpos := []LBUINT{0,14}
+    zsz := []LBUINT{4,8}
+    size := 40
+    cpos, csz := InvertSequence(zpos, zsz, size)
+    exppos := []LBUINT{4,22}
+    expsz := []LBUINT{10,18}
+    if !LBUINTEqual(cpos, exppos) {
+		t.Fatalf(
+            "While testing zapping a record at the end of a sequence, " +
+            "of length %d the zap slices zpos = %v and zsz = %v were " +
+            "inverted to cpos = %v and csz = %v, but %v and %v were expected.",
+            size, zpos, zsz, cpos, csz, exppos, expsz)
+    }
+}
+
+// Zap record at end of data sequence.
+func TestZapCalcEnd(t *testing.T) {
+    zpos := []LBUINT{7,36}
+    zsz := []LBUINT{3,4}
+    size := 40
+    cpos, csz := InvertSequence(zpos, zsz, size)
+    exppos := []LBUINT{0,10}
+    expsz := []LBUINT{7,26}
+    if !LBUINTEqual(cpos, exppos) {
+		t.Fatalf(
+            "While testing zapping a record at the end of a sequence, " +
+            "of length %d the zap slices zpos = %v and zsz = %v were " +
+            "inverted to cpos = %v and csz = %v, but %v and %v were expected.",
+            size, zpos, zsz, cpos, csz, exppos, expsz)
+    }
+}
+
+// Zap record midway in data sequence.
+func TestZapCalcMid(t *testing.T) {
+    zpos := []LBUINT{10,30}
+    zsz := []LBUINT{5,5}
+    size := 40
+    cpos, csz := InvertSequence(zpos, zsz, size)
+    exppos := []LBUINT{0,15,35}
+    expsz := []LBUINT{10,15,5}
+    if !LBUINTEqual(cpos, exppos) {
+		t.Fatalf(
+            "While testing zapping a record at the end of a sequence, " +
+            "of length %d the zap slices zpos = %v and zsz = %v were " +
+            "inverted to cpos = %v and csz = %v, but %v and %v were expected.",
+            size, zpos, zsz, cpos, csz, exppos, expsz)
+    }
+}
+
+// Zap records at start, end, and midway including an adjacent pair.
+func TestZapCalcKitchenSink1(t *testing.T) {
+    zpos := []LBUINT{0,10,23,27,35}
+    zsz := []LBUINT{4,6,4,3,5}
+    size := 40
+    cpos, csz := InvertSequence(zpos, zsz, size)
+    exppos := []LBUINT{4,16,30}
+    expsz := []LBUINT{6,7,5}
+    if !LBUINTEqual(cpos, exppos) {
+		t.Fatalf(
+            "While testing zapping a record at the end of a sequence, " +
+            "of length %d the zap slices zpos = %v and zsz = %v were " +
+            "inverted to cpos = %v and csz = %v, but %v and %v were expected.",
+            size, zpos, zsz, cpos, csz, exppos, expsz)
+    }
+}
+
 // Delete stale data.
 func TestZap(t *testing.T) {
-    lbase.Zap(5)
+    dumpLogfiles()
+    err := lbase.Zap(5)
+	if err != nil {
+		t.Fatalf("Problem zapping logfiles: %s", err)
+	}
+    dumpLogfiles()
+    err = lbase.Save()
+	if err != nil {
+		t.Fatalf("Problem saving logbase: %s", err)
+	}
 }
 
 // SUPPORT FUNCTIONS ==========================================================
@@ -168,12 +254,12 @@ func TestZap(t *testing.T) {
 func setupLogbase() (lb *Logbase) {
     err := os.RemoveAll(lbtest)
 	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
-    lb = MakeLogbase(lbtest, ScreenLogger().SetLevel("FINE"))
+    lb = MakeLogbase(lbtest, ScreenLogger().SetLevel(debug_level))
     err = lb.Init()
 	if err != nil {
 		WrapError("Could not create test logbase", err).Fatal()
 	}
-    lb.config.LOGFILE_MAXBYTES = 100
+    lb.config.LOGFILE_MAXBYTES = logfile_maxbytes
     return
 }
 
@@ -219,6 +305,24 @@ func dumpZapmap() {
     }
 }
 
+func dumpLogfiles() {
+    _, fnums, err := lbase.GetLogfilePaths()
+    if err != nil {WrapError("Could not get logfile paths", err).Fatal()}
+    for _, fnum := range fnums {
+        lfile, err := lbase.GetLogfile(fnum)
+        if err != nil {WrapError("Could not get logfile", err).Fatal()}
+        lbase.debug.Fine(DEBUG_DEFAULT, "Logfile records for %s:", lfile.abspath)
+        lrecs, err2 := lfile.Load()
+        if err2 != nil {WrapError("Could not get logfile", err2).Fatal()}
+        for _, lrec := range lrecs {
+            lbase.debug.Fine(DEBUG_DEFAULT, " %s", lrec.String())
+        }
+        //lbase.debug.Fine(DEBUG_DEFAULT, "Hex dump for %s:", lfile.abspath)
+        //lfile.HexDump(0, 0)
+    }
+    return
+}
+
 // Put and get a key-value pair.
 func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
     key := keystr
@@ -258,4 +362,12 @@ func dumpKeyValuePairs(keys, values []string) {
         lbase.debug.Advise(DEBUG_DEFAULT, " (%s,%s)", keys[i], values[i])
     }
     return
+}
+
+func LBUINTEqual(a, b []LBUINT) bool {
+    if len(a) != len(b) {return false}
+    for i, v := range a {
+        if v != b[i] {return false}
+    }
+    return true
 }
