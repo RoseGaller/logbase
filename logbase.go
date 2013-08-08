@@ -98,6 +98,7 @@ import (
 )
 
 type LBUINT uint32 // Unsigned Logbase integer type used on file
+type VALTYPE uint16 // Value type identifier
 
 const (
 	APPNAME         string = "Logbase"
@@ -109,6 +110,7 @@ const (
 	LBUINT_SIZE_x3  LBUINT = 3 * LBUINT_SIZE
 	LBUINT_SIZE_x4  LBUINT = 4 * LBUINT_SIZE
 	LBUINT_MAX      int64 = 4294967295
+	VALTYPE_SIZE	int = 2
 	CRC_SIZE        LBUINT = LBUINT_SIZE
 )
 
@@ -227,7 +229,7 @@ func (lbase *Logbase) Close() error {
 // the internal master catalog.  If the key already exists in the master,
 // append the old master catalog record into a "zapmap" which schedules stale
 // data for deletion.
-func (lbase *Logbase) Init() error {
+func (lbase *Logbase) Init(user, passhash string) error {
 	lbase.debug.Fine(DEBUG_DEFAULT, "Commence init of logbase %q", lbase.name)
 	// Make dir if it does not exist
 	err := os.MkdirAll(lbase.abspath, 0777)
@@ -274,6 +276,7 @@ func (lbase *Logbase) Init() error {
 		}
 	}
 
+	var isnew bool = false
 	if buildmasterzap {
 		lbase.debug.Advise(
 			DEBUG_DEFAULT,
@@ -282,6 +285,7 @@ func (lbase *Logbase) Init() error {
 		// Get logfile list
 		fpaths, fnums, err := lbase.GetLogfilePaths()
 		if err != nil {return err}
+		if len(fnums) == 0 {isnew = true}
 		lbase.debug.Fine(DEBUG_DEFAULT, "fpaths = %v", fpaths)
 
 		// Iterate through all log files
@@ -317,6 +321,13 @@ func (lbase *Logbase) Init() error {
 
 	// Initialise livelog
 	result := lbase.SetLiveLog()
+
+	if isnew {
+		lbase.InitUsers(user, passhash)
+	} else {
+
+	}
+
 	lbase.debug.Fine(DEBUG_DEFAULT, "Completed init of logbase %q", lbase.name)
 	return result
 }
@@ -345,12 +356,15 @@ func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
 	return
 }
 
-// Save the key-value pair in the live log.
-func (lbase *Logbase) Put(keystr string, val []byte) error {
+// Save the key-value pair in the live log.  Handles the value type
+// prepend into the value bytes.
+func (lbase *Logbase) Put(keystr string, valtype VALTYPE, val []byte) error {
+	val = InjectValueType(valtype, val)
+
 	lbase.debug.Fine(DEBUG_DEFAULT,
-		//"Putting (%q,[%d]byte) into logbase %s",
-		"Putting (%q,%q) size (%d,%d) into logbase %s",
+		"Putting (%q,[%d]byte) into logbase %s",
 		keystr, string(val), len(keystr), len(val), lbase.name)
+
 	if lbase.HasLiveLog() {
 		aftersize :=
 			lbase.livelog.size +
@@ -373,14 +387,17 @@ func (lbase *Logbase) Put(keystr string, val []byte) error {
 	return ErrFileNotFound("Live log file is not defined")
 }
 
-// Retrieve the value for the given key.
-func (lbase *Logbase) Get(keystr string) (val []byte, err error) {
+// Retrieve the value for the given key.  Snips off the value type
+// prepend from the value bytes.
+func (lbase *Logbase) Get(keystr string) (val []byte, valtype VALTYPE, err error) {
 	mcr := lbase.mcat.index[keystr]
 	if mcr == nil {
 		err = FmtErrKeyNotFound(keystr)
 		val = nil
+		valtype = VALTYPE_BYTES
 	} else {
-		return mcr.ReadVal(lbase)
+		val, err = mcr.ReadVal(lbase)
+        val, valtype = SnipValueType(val)
 	}
 
 	return

@@ -17,11 +17,13 @@ import (
 	"strconv"
 	"path/filepath"
 	"strings"
-//	"fmt"
+	"fmt"
+	"time"
 )
 
 const (
-	ID_LENGTH               uint64 = 10 // Should be divisible by 2
+	SERVER_ID_LENGTH        uint64 = 10 // Should be divisible by 2
+	SESSION_ID_LENGTH       uint64 = 10 // Should be divisible by 2
 	SERVER_CONFIG_FILENAME  string = "logbase_server.cfg"
 	DEBUG_FILENAME          string = "debug.log"
 	WS_READ_BUFF_SIZE		int = 1024
@@ -36,6 +38,11 @@ type Server struct {
 	basedir		string
 }
 
+type Session struct {
+	id			string
+	start		time.Time
+}
+
 // Messages.
 
 type CMD uint8
@@ -43,18 +50,20 @@ const CMDSIZE = 1
 
 const (
 	CLOSE CMD = iota
-	GET_LOGBASE
+	OPEN_LOGBASE
+	CLOSE_LOGBASE
 	LIST_LOGBASES
-	PUT // k-v pair
-	GET // k-v pair
+	PUT_PAIR // k-v pair
+	GET_VALUE // k-v pair
 )
 
 var Cmdmap = map[string]CMD{
 	"CLOSE":			CLOSE,
-	"GET_LOGBASE":		GET_LOGBASE,
-	"LIST_LOGBASES":	LIST_LOGBASES,
-    "PUT":				PUT,
-	"GET":				GET,
+	"OPEN_LOGBASE":		OPEN_LOGBASE,
+	"CLOSE_LOGBASE":	CLOSE_LOGBASE,
+	"LIST_LOGBASE":		LIST_LOGBASES,
+    "PUT_PAIR":			PUT_PAIR,
+	"GET_VALUE":		GET_VALUE,
 }
 
 const (
@@ -67,9 +76,16 @@ const (
 //	args	string
 //}
 
+func NewSession() *Session {
+	return &Session{
+		id:         GenerateRandomHexStrings(1, SESSION_ID_LENGTH, SESSION_ID_LENGTH)[0],
+		start:		time.Now(),
+	}
+}
+
 func NewServer() *Server {
 	return &Server{
-		id:         GenerateRandomHexStrings(1, ID_LENGTH, ID_LENGTH)[0],
+		id:         GenerateRandomHexStrings(1, SERVER_ID_LENGTH, SERVER_ID_LENGTH)[0],
 		logbases:   make(map[string]*Logbase),
 		Debug:      ScreenFileLogger(DEBUG_FILENAME),
 	}
@@ -79,9 +95,10 @@ func NewServer() *Server {
 
 // User space constants
 type ServerConfiguration struct {
-	DEBUG_LEVEL     string
-	WEBSOCKET_PORT  int
-	DEFAULT_BASEDIR	string
+	DEBUG_LEVEL			string
+	WEBSOCKET_PORT		int
+	DEFAULT_BASEDIR		string
+	SERVER_PASS_HASH	string
 }
 
 // Default configuration in case file is absent.
@@ -106,7 +123,7 @@ func LoadServerConfig(path string) (config *ServerConfiguration, err error) {
 }
 
 // Initialise configuration and start TCP server.
-func (server *Server) Start() {
+func (server *Server) Start(passhash string) {
 
 	// Init
 	cfgPath := path.Join(".", SERVER_CONFIG_FILENAME)
@@ -117,6 +134,14 @@ func (server *Server) Start() {
 			cfgPath, err).Fatal()
 	}
 	server.config = config
+
+	if passhash != config.SERVER_PASS_HASH {
+		fmt.Println("Incorrect passphrase")
+		os.Exit(1)
+	} else {
+		fmt.Println("Passphrase is good")
+	}
+
 	server.Debug.SetLevel(config.DEBUG_LEVEL)
 	server.Debug.Advise(DEBUG_DEFAULT, "Server id = %s", server.Id())
 	server.Debug.Advise(DEBUG_DEFAULT, "config = %+v", config)
@@ -132,7 +157,7 @@ func (server *Server) Start() {
 	http.Handle("/css/", http.FileServer(http.Dir("./web")))
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 	http.HandleFunc("/logbase", server.SocketSession)
-	server.Debug.Advise(DEBUG_DEFAULT, "Starting server at port %s...", service)
+	server.Debug.Advise(DEBUG_DEFAULT, "Listening on port %s...", service)
 	err = http.ListenAndServe(service, nil)
 	if err != nil {
 		WrapError(
@@ -144,21 +169,23 @@ func (server *Server) Start() {
 }
 
 func (server *Server) Id() string {return server.id}
+func (session *Session) Id() string {return session.id}
 
 // Open an existing Logbase or create it if necessary, identified by a
 // directory path.
-func (server *Server) Open(lbPath string) (lbase *Logbase, err error) {
+func (server *Server) Open(lbPath, user, passhash string) (lbase *Logbase, err error) {
 	// Use existing Logbase if present
 	lbase, present := server.logbases[lbPath]
 	if present {return}
 	lbase = MakeLogbase(lbPath, server.Debug)
-	err = lbase.Init()
+	err = lbase.Init(user, passhash)
 	return
 }
 
 // Collect and respond to socket messages.  When this function finishes, the
 // websocket is closed.
 func (server *Server) SocketSession(w http.ResponseWriter, r *http.Request) {
+	//session := NewSession()
 	server.Debug.Fine(DEBUG_DEFAULT, "Enter SocketSession")
 	ws, err :=
 		websocket.Upgrade(
@@ -228,14 +255,18 @@ func (server *Server) SocketSession(w http.ResponseWriter, r *http.Request) {
 func (server *Server) Respond(cmd CMD, args []string, w io.WriteCloser) {
 	defer w.Close()
 	switch cmd {
-	case GET_LOGBASE:
+	case OPEN_LOGBASE:
+		return
+	case CLOSE_LOGBASE:
 		return
 	case LIST_LOGBASES:
-		server.Debug.Basic(DEBUG_DEFAULT, "List logbases %q", args[0])
+		list, err := server.ListLogbases()
+		server.Debug.Error(err)
+		server.Debug.Basic(DEBUG_DEFAULT, "List logbases: %s", list)
 		return
-	case PUT:
+	case PUT_PAIR:
 		return
-	case GET:
+	case GET_VALUE:
 		return
 	}
 	return

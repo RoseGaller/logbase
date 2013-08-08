@@ -7,19 +7,27 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
+	"encoding/gob"
 	"reflect"
 	"hash/crc32"
 	"fmt"
 	"sort"
-	"os"
 )
 
 const (
-	LOG_RECORD = iota
-	INDEX_RECORD = iota
-	MASTER_RECORD = iota
-	ZAP_RECORD = iota
+	LOG_RECORD int = iota
+	INDEX_RECORD
+	MASTER_RECORD
+	ZAP_RECORD
+)
+
+const (
+    VALTYPE_BYTES VALTYPE	= 0 // Default
+	VALTYPE_LOCATION		= 1 // file path, URI
+    VALTYPE_STRING          = 2
+	VALTYPE_GOB             = 3 // Golang gob
+	VALTYPE_INT             = 4
+	VALTYPE_TIME            = 50
 )
 
 // Whether to read a value size after the key size when using the
@@ -233,6 +241,22 @@ func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
 }
 
 // Interchanges.
+
+func InjectValueType(valtype VALTYPE, val []byte) []byte {
+	bfr := new(bytes.Buffer)
+	binary.Write(bfr, binary.BigEndian, valtype)
+	bfr.Write(val)
+	return bfr.Bytes()
+}
+
+func SnipValueType(val []byte) ([]byte, VALTYPE) {
+	bfr := bufio.NewReader(bytes.NewBuffer(val))
+	var valtype VALTYPE
+	binary.Read(bfr, binary.BigEndian, &valtype)
+	newval := make([]byte, len(val) - VALTYPE_SIZE) // must have fixed size
+	binary.Read(bfr, binary.BigEndian, &newval)
+	return newval, valtype
+}
 
 func (vl *ValueLocation) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
 	vl.fnum = fnum
@@ -588,31 +612,18 @@ func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
 	return
 }
 
-// Random numbers.
+func Gobify(param interface{}, debug *DebugLogger) []byte {
+	var bfr bytes.Buffer
+	enc := gob.NewEncoder(&bfr)
+	err := enc.Encode(&param)
+	debug.Error(err)
+	return bfr.Bytes()
+}
 
-
-// Generate a slice of random hex strings of random length within the given
-// range of lengths.
-// Credit to Russ Cox https://groups.google.com/forum/#!topic/golang-nuts/d0nF_k4dSx4
-// for the idea of using /dev/urandom.
-// TODO check cross compatibility of /dev/urandom
-func GenerateRandomHexStrings(n, minsize, maxsize uint64) (result []string) {
-	frnd, _ := os.OpenFile("/dev/urandom", os.O_RDONLY, 0)
-	defer frnd.Close()
-
-	maxuint := float64(^uint64(0))
-	rng := float64(maxsize - minsize)
-	if rng < 0 {
-		ErrNew(fmt.Sprintf("maxsize %d must be >= minsize %d", maxsize, minsize)).Fatal()
-	}
-	var adjlen, rawlen uint64
-	result = make([]string, n)
-	for i := 0; i < int(n); i++ {
-		binary.Read(frnd, binary.BigEndian, &rawlen)
-		adjlen = uint64(float64(rawlen)*rng/maxuint) + minsize
-		rndval := make([]byte, int(adjlen)/2)
-		frnd.Read(rndval)
-		result[i] = hex.EncodeToString(rndval)
-	}
+func Degobify(byts []byte, param interface{}, debug *DebugLogger) {
+	var bfr bytes.Buffer
+	dec := gob.NewDecoder(&bfr)
+	err := dec.Decode(&param)
+	debug.Error(err)
 	return
 }

@@ -358,7 +358,7 @@ func (lfile *Logfile) ReadVal(vpos, vsz LBUINT) ([]byte, error) {
 
 // Zap stale values from the logfile, by copying the file to a tmp file while
 // ignoring stale records as defined by the given Zapmap.
-func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
+func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 	lfile.debug.Fine(DEBUG_DEFAULT, "Zapping %s", lfile.abspath)
 	// Extract all zaprecords for this file and build a map between the logfile
 	// record positions -> record size.
@@ -390,10 +390,10 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
 	lfile.debug.SuperFine(DEBUG_DEFAULT, " preserve: cpos = %v csz = %v", cpos, csz)
 
 	// Transpose logfile (with gaps) to tmp file
-	var buf []byte // normal buffer
-	buf0 := make([]byte, int(bufsz))
+	var bfr []byte // normal buffer
+	bfr0 := make([]byte, int(bfrsz))
 	var rem LBUINT // remainder buffer
-	var hasRem bool // is there a remainder portion when chunk divided by buf0?
+	var hasRem bool // is there a remainder portion when chunk divided by bfr0?
 	var size LBUINT // number of bytes to read/write
 	var n LBUINT // number of buffer lengths returned by BufferChunk, +1 if rem
 	var kr LBUINT // read position in logfile
@@ -406,27 +406,27 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
 	for i := 0; i < len(cpos); i++ {
 		// First, we need to determine the chunk that needs to be read
 		kr = cpos[i]
-		n, rem = DivideChunkByBuffer(csz[i], bufsz)
+		n, rem = DivideChunkByBuffer(csz[i], bfrsz)
 		lfile.debug.SuperFine(
 			DEBUG_DEFAULT,
 			" dividing chunk %d by %d yields n = %d rem = %d",
-			csz[i], bufsz, n, rem)
+			csz[i], bfrsz, n, rem)
 		hasRem = (rem > 0)
 		if hasRem {n++}
-		buf = buf0
-		size = bufsz
+		bfr = bfr0
+		size = bfrsz
 		for j = 0; j < n; j++ {
 			if j == n - 1 && hasRem { // switch for the remainder portion
-				buf = make([]byte, rem)
+				bfr = make([]byte, rem)
 				size = rem
 			}
 			// Read
-			nr, err = lfile.gofile.ReadAt(buf, int64(kr))
-			buf = buf[0:nr]
+			nr, err = lfile.gofile.ReadAt(bfr, int64(kr))
+			bfr = bfr[0:nr]
 			lfile.debug.SuperFine(
 				DEBUG_DEFAULT,
 				" read = %s err = %v",
-				FmtHexString(buf), err)
+				FmtHexString(bfr), err)
 			if err != nil && err != io.EOF {
 				return WrapError(fmt.Sprintf(
 					"Attempted to read %d bytes at position %d in file %q",
@@ -435,11 +435,11 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bufsz LBUINT) error {
 			kr = kr + size
 
 			// Write
-			_, err = tmp.Write(buf) // Only use part of slice if near EOF
+			_, err = tmp.Write(bfr) // Only use part of slice if near EOF
 			lfile.debug.SuperFine(
 				DEBUG_DEFAULT,
 				" wrote = %s err = %v",
-				FmtHexString(buf), err)
+				FmtHexString(bfr), err)
 			if err != nil {
 				return WrapError(fmt.Sprintf(
 					"Attempted to write %d bytes at position %d in file %q",

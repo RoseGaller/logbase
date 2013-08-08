@@ -9,20 +9,30 @@ import (
 	"fmt"
 )
 
+const (
+	killname string = "./.kill"
+)
+
 func main() {
-	fmt.Println("Starting Logbase Server instance")
+	fmt.Println("=== LOGBASE SERVER ===")
+
+	if len(os.Args) > 1 {
+		if os.Args[1] == "-p" {lb.MakePassHash()}
+	}
+
+	pass := lb.AskForPass()
 	MakeKillFile()
-	lb.NewServer().Start()
+	lb.NewServer().Start(lb.GeneratePassHash(pass))
+	os.RemoveAll(killname)
 }
 
 // Currently makes a linux kill file.
 func MakeKillFile() error {
-	fname := "./.kill"
-	err := os.Remove(fname)
+	err := os.RemoveAll(killname)
 	if err != nil {return err}
 	file, err2 :=
 		os.OpenFile(
-			fname,
+			killname,
 			os.O_CREATE |
 			os.O_APPEND |
 			os.O_RDWR,

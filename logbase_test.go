@@ -328,12 +328,12 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 	key := keystr
 	val := []byte(valstr)
 
-	lbase.Put(key, val)
+	lbase.Put(key, VALTYPE_STRING, val)
 	if lbase.err != nil {
 		t.Fatalf("Could not put key value pair into test logbase: %s", lbase.err)
 	}
 
-	got, errget := lbase.Get(key)
+	got, valtype, errget := lbase.Get(key)
 	if errget != nil {
 		t.Fatalf("Could not get key value pair from test logbase: %s", errget)
 	}
@@ -343,6 +343,12 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 	if vstr != gotstr {
 		t.Fatalf("The retrieved value %q differed from the expected value %q",
 			gotstr, vstr)
+	}
+
+	if valtype != VALTYPE_STRING {
+		t.Fatalf(
+			"The retrieved value type %d differed from the expected value type %d",
+			valtype, VALTYPE_STRING)
 	}
 
 	return lbase
