@@ -3,14 +3,14 @@
 */
 package main
 
-import lb "github.com/h00gs/logbase"
 import (
+	lb "github.com/h00gs/logbase"
 	"os"
 	"fmt"
 )
 
 const (
-	killname string = "./.kill"
+	KILLFILE_PATH			string = "./.kill"
 )
 
 func main() {
@@ -23,16 +23,16 @@ func main() {
 	pass := lb.AskForPass()
 	MakeKillFile()
 	lb.NewServer().Start(lb.GeneratePassHash(pass))
-	os.RemoveAll(killname)
+	os.RemoveAll(KILLFILE_PATH)
 }
 
 // Currently makes a linux kill file.
 func MakeKillFile() error {
-	err := os.RemoveAll(killname)
+	err := os.RemoveAll(KILLFILE_PATH)
 	if err != nil {return err}
 	file, err2 :=
 		os.OpenFile(
-			killname,
+			KILLFILE_PATH,
 			os.O_CREATE |
 			os.O_APPEND |
 			os.O_RDWR,

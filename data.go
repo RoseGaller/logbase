@@ -12,6 +12,7 @@ import (
 	"hash/crc32"
 	"fmt"
 	"sort"
+	"sync"
 )
 
 const (
@@ -211,6 +212,73 @@ var GenericValueSize = map[int]LBUINT{
 func ValSizePosBytes() LBUINT {return LBUINT_SIZE_x2}
 func ValueLocationBytes() LBUINT {return LBUINT_SIZE_x3}
 func RecordLocationBytes() LBUINT {return LBUINT_SIZE_x3}
+
+// Logbase level.
+
+//  Index of all key-value pairs in a log file.
+type Index struct {
+	list    []*IndexRecord
+}
+
+//  Master catalog of all live (not stale) key-value pairs.
+type MasterCatalog struct {
+	index   map[string]*MasterCatalogRecord // The in-memory index
+	file    *Masterfile
+	sync.RWMutex
+}
+
+// Init a MasterCatalog.
+func NewMasterCatalog() *MasterCatalog {
+	return &MasterCatalog{
+		index: make(map[string]*MasterCatalogRecord),
+	}
+}
+
+//  Stale key-value pairs scheduled to be deleted from log files.
+type Zapmap struct {
+	zapmap  map[string][]*ZapRecord // "Zapmap"
+	file    *Zapfile
+	sync.RWMutex
+}
+
+// Init a Zapmap, which points to stale data scheduled for deletion.
+func NewZapmap() *Zapmap {
+	return &Zapmap{
+		zapmap: make(map[string][]*ZapRecord),
+	}
+}
+
+// Logbase methods.
+
+// Update the master catalog map with an index record (usually) generated from
+// an individual log file, and add an existing (stale) value entry to the
+// zapmap.
+func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
+	keystr := string(irec.key)
+	newmcr := NewMasterCatalogRecord()
+	newmcr.FromIndexRecord(irec, fnum)
+	lbase.mcat.RLock() // other reads ok
+	oldmcr, exists := lbase.mcat.index[keystr]
+	lbase.mcat.RUnlock()
+
+	if exists {
+		// Add to zapmap
+		var zrecs []*ZapRecord
+		zrecs, _ = lbase.zmap.zapmap[keystr]
+		zrec := NewZapRecord()
+		zrec.FromMasterCatalogRecord(keystr, oldmcr)
+		zrecs = append(zrecs, zrec)
+		lbase.zmap.Lock()
+		lbase.zmap.zapmap[keystr] = zrecs
+		lbase.zmap.Unlock()
+	}
+
+	// Update the master catalog
+	lbase.mcat.Lock()
+	lbase.mcat.index[keystr] = newmcr
+	lbase.mcat.Unlock()
+	return
+}
 
 // Data container methods.
 
@@ -615,7 +683,7 @@ func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
 func Gobify(param interface{}, debug *DebugLogger) []byte {
 	var bfr bytes.Buffer
 	enc := gob.NewEncoder(&bfr)
-	err := enc.Encode(&param)
+	err := enc.Encode(param)
 	debug.Error(err)
 	return bfr.Bytes()
 }
@@ -627,3 +695,4 @@ func Degobify(byts []byte, param interface{}, debug *DebugLogger) {
 	debug.Error(err)
 	return
 }
+

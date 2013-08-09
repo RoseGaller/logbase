@@ -10,6 +10,8 @@ const (
 	lbtest = "test"
 	logfile_maxbytes = 100
 	debug_level = "FINE"
+	user = "admin"
+	passhash = "root"
 )
 
 var lbase *Logbase = setupLogbase()
@@ -75,7 +77,7 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 func TestLoadMasterAndZapmap(t *testing.T) {
 	lbase.mcat = NewMasterCatalog()
 	lbase.zmap = NewZapmap()
-	lbase.Init()
+	lbase.Init(user, passhash)
 	dumpMaster()
 	dumpZapmap()
 	if len(lbase.mcat.index) != len(mc.index) {
@@ -126,7 +128,7 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
 	if err != nil {WrapError("Trouble deleting dir " + path, err).Fatal()}
 	lbase.mcat = NewMasterCatalog()
 	lbase.zmap = NewZapmap()
-	lbase.Init()
+	lbase.Init(user, passhash)
 	dumpMaster()
 	dumpZapmap()
 	if len(lbase.mcat.index) != len(mc.index) {
@@ -255,7 +257,7 @@ func setupLogbase() (lb *Logbase) {
 	err := os.RemoveAll(lbtest)
 	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
 	lb = MakeLogbase(lbtest, ScreenLogger().SetLevel(debug_level))
-	err = lb.Init()
+	err = lb.Init(user, passhash)
 	if err != nil {
 		WrapError("Could not create test logbase", err).Fatal()
 	}

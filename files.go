@@ -34,16 +34,14 @@ type File struct {
 	id      int
 	gofile  *os.File
 	abspath string // path name used to open file
-	rwmu    *sync.RWMutex
+	sync.RWMutex
 	debug   *DebugLogger
 	isOpen  bool // its ok to have multiple opens of same gofile
 	size    int // size in bytes
 }
 
 func NewFile() *File {
-	return &File{
-		rwmu: new(sync.RWMutex),
-	}
+	return &File{}
 }
 
 // Map of all files managed by the Logbase.  This allows us to keep a single RWMutex
@@ -300,10 +298,10 @@ func (file *File) ReadIntoParam(pos, size LBUINT, data interface{}, desc string)
 func (file *File) LockedReadAt(pos, size LBUINT, desc string) (byts []byte, err error) {
 	byts = make([]byte, size)
 	var nr int
-	file.rwmu.RLock() // other reads ok
+	file.RLock() // other reads ok
 	// Locked action
 	nr, err = file.gofile.ReadAt(byts, int64(pos))
-	file.rwmu.RUnlock()
+	file.RUnlock()
 	byts = byts[0:nr]
 	if err != nil {return}
 
@@ -316,10 +314,10 @@ func (file *File) LockedReadAt(pos, size LBUINT, desc string) (byts []byte, err 
 // Wait for any locks, set lock, write bytes to file and unlock.
 // The caller is responsible for opening and closing the file.
 func (file *File) LockedWriteAt(byts []byte, pos LBUINT) (nw int, err error) {
-	file.rwmu.Lock()
+	file.Lock()
 	// Locked action
 	nw, err = file.gofile.WriteAt(byts, int64(pos))
-	file.rwmu.Unlock()
+	file.Unlock()
 	return
 }
 
@@ -333,9 +331,8 @@ func (freg *FileRegister) StringArray() []string {
 
 func (file *File) String() string {
 	return fmt.Sprintf(
-		"%v %d %s %v",
+		"%v %d %s",
 		&file,
 		file.id,
-		file.abspath,
-		file.rwmu)
+		file.abspath)
 }

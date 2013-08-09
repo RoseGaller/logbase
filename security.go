@@ -54,16 +54,38 @@ func NewWriter() *Permissions {
 	}
 }
 
-func (lbase *Logbase) InitUsers(user, passhash string) {
+func (lbase *Logbase) AddUser(user, passhash string) {
+	lbase.Put(UserPassKey(user), VALTYPE_STRING, []byte(passhash))
 	lbase.Put(
-		"User." + user + ".pass",
-		VALTYPE_STRING,
-		[]byte(passhash))
-	lbase.Put(
-		"User." + user + ".permissions",
-		VALTYPE_GOB,
-		Gobify(NewAdmin(), lbase.debug))
+		UserPermissionsKey(user), VALTYPE_GOB, Gobify(NewAdmin(), lbase.debug))
     return
+}
+
+func (lbase *Logbase) IsValidUser(user, passhash string) error {
+	val, _, err := lbase.Get(UserPassKey(user))
+	lbase.debug.Error(err)
+	if val == nil {return FmtErrUser("User %q does not exist", user)}
+	if string(val) == passhash {return nil}
+    return FmtErrUser("Password for user %q is not valid", user)
+}
+
+func (lbase *Logbase) IsUser(user string) error {
+	val, _, err := lbase.Get(UserPassKey(user))
+	lbase.debug.Error(err)
+	if val == nil {return FmtErrUser("User %q does not exist", user)}
+    return nil
+}
+
+func UserKey(user string) string {
+	return "User." + user
+}
+
+func UserPassKey(user string) string {
+	return UserKey(user) + ".pass"
+}
+
+func UserPermissionsKey(user string) string {
+	return UserKey(user) + ".permissions"
 }
 
 // Hiding user text input requires a linux system using gopass.

@@ -226,11 +226,11 @@ func (debug *DebugLogger) Warn(msgConfig *DebugMessageConfig, msg string, a ...i
 }
 
 // Issue error to debug output.  Always use full caller logging.
-func (debug *DebugLogger) Error(err error) *DebugLogger {
+func (debug *DebugLogger) Error(err error) error {
 	if err != nil {
 		debug.messageHandler(DEBUG_FULL, "ERROR", err.Error())
 	}
-	return debug
+	return err
 }
 
 // Format a byte slice as a hex string with spaces.

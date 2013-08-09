@@ -148,3 +148,14 @@ func FmtErrPartialLocationData(size, nread LBUINT) *AppError {
 func ErrDataSize(msg string) *AppError {
 	return makeAppError().Describe(msg, "unexpected_data_size")
 }
+
+// User problems.
+
+func FmtErrUser(msg string, a ...interface{}) *AppError {
+	return ErrUser(fmt.Sprintf(msg, a...))
+}
+
+func ErrUser(msg string) *AppError {
+	return makeAppError().Describe(msg, "user")
+}
+

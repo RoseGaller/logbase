@@ -401,7 +401,7 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 	var j LBUINT
 	var nr int
 
-	lfile.rwmu.RLock() // other reads ok while we transpose to tmp file
+	lfile.RLock() // other reads ok while we transpose to tmp file
 
 	for i := 0; i < len(cpos); i++ {
 		// First, we need to determine the chunk that needs to be read
@@ -449,15 +449,15 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 		}
 	}
 
-	lfile.rwmu.RUnlock()
+	lfile.RUnlock()
 	lfile.Close()
 	tmp.Close()
 
 	if kw > 0 {
-		lfile.rwmu.Lock()
+		lfile.Lock()
 		if err = lfile.Remove(); err != nil {return err}
 		if err = os.Rename(tmppath, lfile.abspath); err != nil {return err}
-		lfile.rwmu.Unlock()
+		lfile.Unlock()
 		zmap.Purge(lfile.fnum, lfile.debug)
 	} else {
 		if err = os.Remove(tmppath); err != nil {return err}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"github.com/h00gs/toml"
 	"github.com/garyburd/go-websocket/websocket"
+	"net"
 	"net/http"
 	"io"
 //	"encoding/json"
@@ -28,6 +29,9 @@ const (
 	DEBUG_FILENAME          string = "debug.log"
 	WS_READ_BUFF_SIZE		int = 1024
 	WS_WRITE_BUFF_SIZE		int = 1024
+	ADMIN_USER				string = "Admin"
+	CHECK_CLOSEFILE_SECS	int = 5 // Check for close file every x secs
+	CLOSEFILE_PATH			string = "./.close"
 )
 
 type Server struct {
@@ -36,11 +40,15 @@ type Server struct {
 	config      *ServerConfiguration
 	Debug       *DebugLogger
 	basedir		string
+	users		*Logbase
+	shutdown	bool
+	listener	net.Listener
 }
 
-type Session struct {
+type WebsocketSession struct {
 	id			string
 	start		time.Time
+	connection	*websocket.Conn
 }
 
 // Messages.
@@ -49,7 +57,8 @@ type CMD uint8
 const CMDSIZE = 1
 
 const (
-	CLOSE CMD = iota
+	LOGIN CMD = iota
+	CLOSE
 	OPEN_LOGBASE
 	CLOSE_LOGBASE
 	LIST_LOGBASES
@@ -58,6 +67,7 @@ const (
 )
 
 var Cmdmap = map[string]CMD{
+	"LOGIN":			LOGIN,
 	"CLOSE":			CLOSE,
 	"OPEN_LOGBASE":		OPEN_LOGBASE,
 	"CLOSE_LOGBASE":	CLOSE_LOGBASE,
@@ -76,8 +86,8 @@ const (
 //	args	string
 //}
 
-func NewSession() *Session {
-	return &Session{
+func NewWebsocketSession() *WebsocketSession {
+	return &WebsocketSession{
 		id:         GenerateRandomHexStrings(1, SESSION_ID_LENGTH, SESSION_ID_LENGTH)[0],
 		start:		time.Now(),
 	}
@@ -88,6 +98,7 @@ func NewServer() *Server {
 		id:         GenerateRandomHexStrings(1, SERVER_ID_LENGTH, SERVER_ID_LENGTH)[0],
 		logbases:   make(map[string]*Logbase),
 		Debug:      ScreenFileLogger(DEBUG_FILENAME),
+		shutdown:	false,
 	}
 }
 
@@ -122,16 +133,41 @@ func LoadServerConfig(path string) (config *ServerConfiguration, err error) {
 	return
 }
 
-// Initialise configuration and start TCP server.
+// Initialise server and start TCP server.
 func (server *Server) Start(passhash string) {
 
-	// Init
+	server.Init(passhash)
+
+	// TCP server
+	service := ":" + strconv.Itoa(server.config.WEBSOCKET_PORT)
+	http.Handle("/script/", http.FileServer(http.Dir("./web")))
+	http.Handle("/css/", http.FileServer(http.Dir("./web")))
+	http.Handle("/", http.FileServer(http.Dir("./web")))
+	http.HandleFunc("/logbase", server.WebsocketSession)
+	server.Debug.Advise(DMC0, "Listening on port %s...", service)
+	listener, err := net.Listen("tcp", service)
+	if server.Debug.Error(err) == nil {
+		server.listener = listener
+		err = http.Serve(listener, nil) // for{} loop
+		server.Debug.Error(err)
+		if server.shutdown {
+			server.GracefulShutdown()
+		}
+	}
+	return
+}
+
+func (server *Server) GracefulShutdown() {
+	server.Debug.Advise(DMC0, "Gracefully shutting down...")
+	return
+}
+
+// Initialise server and configuration.
+func (server *Server) Init(passhash string) {
 	cfgPath := path.Join(".", SERVER_CONFIG_FILENAME)
 	config, err := LoadServerConfig(cfgPath)
-	if err != nil {
-		WrapError(
-			"Problem loading server config file " +
-			cfgPath, err).Fatal()
+	if server.Debug.Error(err) != nil {
+		WrapError("Problem loading server config file", err).Fatal()
 	}
 	server.config = config
 
@@ -143,33 +179,54 @@ func (server *Server) Start(passhash string) {
 	}
 
 	server.Debug.SetLevel(config.DEBUG_LEVEL)
-	server.Debug.Advise(DEBUG_DEFAULT, "Server id = %s", server.Id())
-	server.Debug.Advise(DEBUG_DEFAULT, "config = %+v", config)
+	server.Debug.Advise(DMC0, "Server id = %s", server.Id())
+	server.Debug.Advise(DMC0, "config = %+v", config)
 	server.basedir = config.DEFAULT_BASEDIR
-	server.Debug.Advise(
-		DEBUG_DEFAULT,
-		"Default dir in which to look for logbases = %s",
+	server.Debug.Advise(DMC0,
+		"Directory in which to look for logbases = %s",
 		server.basedir)
 
-	// TCP server
-	service := ":" + strconv.Itoa(config.WEBSOCKET_PORT)
-	http.Handle("/script/", http.FileServer(http.Dir("./web")))
-	http.Handle("/css/", http.FileServer(http.Dir("./web")))
-	http.Handle("/", http.FileServer(http.Dir("./web")))
-	http.HandleFunc("/logbase", server.SocketSession)
-	server.Debug.Advise(DEBUG_DEFAULT, "Listening on port %s...", service)
-	err = http.ListenAndServe(service, nil)
-	if err != nil {
-		WrapError(
-			"Problem starting tcp server at port " +
-			service, err).Fatal()
+	// User logbase
+    users := MakeLogbase(server.UsersLogbasePath(), server.Debug)
+	err = users.Init(ADMIN_USER, passhash)
+	if server.Debug.Error(err) != nil {
+		WrapError("Problem initialising Users logbase", err).Fatal()
 	}
+    server.users = users
+
+	// Close file
+	go server.CloseFileChecker()
 
 	return
 }
 
+// Continually checks to see if close file exists, if so, switches
+// server shutdown flag on.
+func (server *Server) CloseFileChecker() {
+	server.Debug.Error(os.RemoveAll(CLOSEFILE_PATH))
+	server.Debug.Basic(DMC0,
+		"Started close file checker (triggers shutdown if %q file appears)",
+		CLOSEFILE_PATH)
+	var err error
+	for {
+		<-time.After(time.Duration(CHECK_CLOSEFILE_SECS) * time.Second)
+		_, err = os.Stat(CLOSEFILE_PATH)
+		if !os.IsNotExist(err) {
+			server.Debug.Advise(DMC0,
+				"Close file detected, triggering shutdown")
+			server.shutdown = true
+			server.listener.Close()
+			break
+		}
+	}
+	return
+}
+
+func (server *Server) UsersLogbasePath() string {
+	return path.Join(server.basedir, "ServerUsers")
+}
 func (server *Server) Id() string {return server.id}
-func (session *Session) Id() string {return session.id}
+func (session *WebsocketSession) Id() string {return session.id}
 
 // Open an existing Logbase or create it if necessary, identified by a
 // directory path.
@@ -184,9 +241,8 @@ func (server *Server) Open(lbPath, user, passhash string) (lbase *Logbase, err e
 
 // Collect and respond to socket messages.  When this function finishes, the
 // websocket is closed.
-func (server *Server) SocketSession(w http.ResponseWriter, r *http.Request) {
-	//session := NewSession()
-	server.Debug.Fine(DEBUG_DEFAULT, "Enter SocketSession")
+func (server *Server) WebsocketSession(w http.ResponseWriter, r *http.Request) {
+	server.Debug.Fine(DMC0, "Enter SocketSession")
 	ws, err :=
 		websocket.Upgrade(
 			w,                    // any responder that supports http.Hijack
@@ -194,12 +250,13 @@ func (server *Server) SocketSession(w http.ResponseWriter, r *http.Request) {
 			nil,                  // response header string->string map
 			WS_READ_BUFF_SIZE,    // buffer sizes for read...
 			WS_WRITE_BUFF_SIZE)   // and write
-	if err != nil {
+	if server.Debug.Error(err) != nil {
 		http.Error(w, err.Error(), 400)
-		server.Debug.Error(err)
 		return
 	}
 	defer ws.Close()
+	session := NewWebsocketSession()
+	session.connection = ws
 	//inbyts := make([]byte, WS_READ_BUFF_SIZE)
 	//var n int
 	for {
@@ -233,7 +290,7 @@ func (server *Server) SocketSession(w http.ResponseWriter, r *http.Request) {
 			buf := new(bytes.Buffer)
 			buf.ReadFrom(r)
 			intxt := buf.String()
-			server.Debug.Fine(DEBUG_DEFAULT, "SocketSession incoming: %q", intxt)
+			server.Debug.Fine(DMC0, "SocketSession incoming: %q", intxt)
 			words := strings.Split(intxt, " ")
 			//decoder := json.NewDecoder(r)
 			//err = decoder.Decode(&intxt)
@@ -243,18 +300,20 @@ func (server *Server) SocketSession(w http.ResponseWriter, r *http.Request) {
 			//}
 			cmd := Cmdmap[words[0]]
 			if cmd == CLOSE {
-				server.Debug.Fine(DEBUG_DEFAULT, "SocketSession closed by client")
+				server.Debug.Fine(DMC0, "SocketSession closed by client")
 				break
 			}
-			go server.Respond(cmd, words[1:], w)
+			server.Respond(session, cmd, words[1:], w)
 		}
 	}
 	return
 }
 
-func (server *Server) Respond(cmd CMD, args []string, w io.WriteCloser) {
+func (server *Server) Respond(session *WebsocketSession, cmd CMD, args []string, w io.WriteCloser) {
 	defer w.Close()
 	switch cmd {
+	case LOGIN:
+		return
 	case OPEN_LOGBASE:
 		return
 	case CLOSE_LOGBASE:
@@ -262,7 +321,7 @@ func (server *Server) Respond(cmd CMD, args []string, w io.WriteCloser) {
 	case LIST_LOGBASES:
 		list, err := server.ListLogbases()
 		server.Debug.Error(err)
-		server.Debug.Basic(DEBUG_DEFAULT, "List logbases: %s", list)
+		server.Debug.Basic(DMC0, "List logbases: %s", list)
 		return
 	case PUT_PAIR:
 		return
@@ -274,8 +333,7 @@ func (server *Server) Respond(cmd CMD, args []string, w io.WriteCloser) {
 
 func (server *Server) ListLogbases() (paths []string, err error) {
 	var nscan int = 0
-	server.Debug.Basic(
-		DEBUG_DEFAULT, "Compiling list of logbases in %s", server.basedir)
+	server.Debug.Basic(DMC0, "Compiling list of logbases in %s", server.basedir)
 	findTopLevelDir :=
 			func(fpath string, fileInfo os.FileInfo, inerr error) (err error) {
 			stat, err := os.Stat(fpath)
