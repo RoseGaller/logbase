@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"encoding/hex"
 	"bytes"
+	"path/filepath"
+	"strconv"
 )
 
 const (
@@ -27,7 +29,7 @@ const ( // order important
 
 const (
 	CALLER_NIL = iota
-	CALLER_FUNC
+	CALLER_PART
 	CALLER_FULL
 )
 
@@ -35,10 +37,8 @@ type DebugMessageConfig struct {
 	callerDetail    int
 }
 
-var DEBUG_DEFAULT = &DebugMessageConfig{}
-var DMC0 = &DebugMessageConfig{}
 var DEBUG_NIL = &DebugMessageConfig{CALLER_NIL}
-var DEBUG_FUNC = &DebugMessageConfig{CALLER_FUNC}
+var DEBUG_PART = &DebugMessageConfig{CALLER_PART}
 var DEBUG_FULL = &DebugMessageConfig{CALLER_FULL}
 
 var DebugLevels = map[string]int{
@@ -116,8 +116,10 @@ func NilLogger() *DebugLogger{
 }
 
 // Return a file debug logger writer using the given fname.
+// TODO do something about protecting the user from appending to
+// a very large logger file!
 func FileDebugWriter(fname string) io.Writer {
-	gfile, err := OpenFile(fname)
+	gfile, err := OpenFile(fname, CREATE | WRITE_ONLY | APPEND)
 	if err != nil {WrapError("Could not open debug log: ", err).Fatal()}
 	return gfile
 }
@@ -126,7 +128,7 @@ func FileDebugWriter(fname string) io.Writer {
 func MakeLogger(writers []io.Writer) *DebugLogger {
 	level := DebugLevels["BASIC"]
 	debug := NewDebugLogger(level, writers)
-	debug.Advise(DEBUG_DEFAULT, "Debug logger started")
+	debug.Advise("Debug logger started")
 	return debug
 }
 
@@ -137,7 +139,7 @@ func (debug *DebugLogger) SetLevel(levelstr string) *DebugLogger {
 	level, ok := DebugLevels[newname]
 	if !ok {FmtErrKeyNotFound(levelstr).Fatal()}
 	debug.level = level
-	debug.Advise(DEBUG_DEFAULT, fmt.Sprintf(
+	debug.Advise(fmt.Sprintf(
 		  "Debug level changed from %q to %q",
 		  oldname, newname))
 	return debug
@@ -172,57 +174,65 @@ func (debug *DebugLogger) Println(msg string) *DebugLogger {
 }
 
 // Output debug message as long as current level is at least SUPERFINE.
-func (debug *DebugLogger) SuperFine(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
+func (debug *DebugLogger) SuperFine(msg string, a ...interface{}) *DebugLogger {
 	if debug.level >= DEBUGLEVEL_SUPERFINE {
-		debug.messageHandler(msgConfig, DebugLevelName[DEBUGLEVEL_SUPERFINE], msg, a...)
+		debug.messageHandler(DEBUG_FULL, DebugLevelName[DEBUGLEVEL_SUPERFINE], msg, a...)
 	}
 	return debug
 }
 
 // Output debug message as long as current level is at least FINE.
-func (debug *DebugLogger) Fine(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
+func (debug *DebugLogger) Fine(msg string, a ...interface{}) *DebugLogger {
 	if debug.level >= DEBUGLEVEL_FINE {
-		debug.messageHandler(msgConfig, DebugLevelName[DEBUGLEVEL_FINE], msg, a...)
+		debug.messageHandler(DEBUG_PART, DebugLevelName[DEBUGLEVEL_FINE], msg, a...)
 	}
 	return debug
 }
 
 // Output debug message as long as current level is at least BASIC.
-func (debug *DebugLogger) Basic(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
+func (debug *DebugLogger) Basic(msg string, a ...interface{}) *DebugLogger {
 	if debug.level >= DEBUGLEVEL_BASIC {
-		debug.messageHandler(msgConfig, DebugLevelName[DEBUGLEVEL_BASIC], msg, a...)
+		debug.messageHandler(DEBUG_PART, DebugLevelName[DEBUGLEVEL_BASIC], msg, a...)
 	}
 	return debug
 }
 
 // Output debug message as long as current level is at least ADVISE.
-func (debug *DebugLogger) Advise(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
+func (debug *DebugLogger) Advise(msg string, a ...interface{}) *DebugLogger {
 	if debug.level >= DEBUGLEVEL_ADVISE {
-		debug.messageHandler(msgConfig, DebugLevelName[DEBUGLEVEL_ADVISE], msg, a...)
+		debug.messageHandler(DEBUG_NIL, DebugLevelName[DEBUGLEVEL_ADVISE], msg, a...)
 	}
 	return debug
 }
 
 // A common handler for the debug message methods. Use of a DebugMessageConfig
 // struct offers scope to enhance message functionality in the future.
-func (debug *DebugLogger) messageHandler(msgConfig *DebugMessageConfig, levelstr, msg string, a ...interface{}) {
+func (debug *DebugLogger) messageHandler(msgConfig *DebugMessageConfig, levelstr, msg string, a ...interface{}) *DebugLogger {
 	var out string
+	sep := ": "
+	if len(msg) == 0 {sep = ""}
 	switch msgConfig.callerDetail {
 	case CALLER_NIL:
 		out = stamp(fmt.Sprintf(msg, a...), levelstr)
-	case CALLER_FUNC:
-		out = stamp(fmt.Sprintf(CaptureCaller(3).fn + ": " + msg, a...), levelstr)
+	case CALLER_PART:
+		caller := CaptureCaller(3)
+		out = stamp(fmt.Sprintf(
+			filepath.Base(caller.filename) + "[" +
+			strconv.Itoa(caller.line) + "]" + sep +
+			msg, a...), levelstr)
 	case CALLER_FULL:
-		out = stamp(fmt.Sprintf(CaptureCaller(3).String() + ": " + msg, a...), levelstr)
+		out = stamp(fmt.Sprintf(
+			CaptureCaller(3).String() + sep + msg, a...), levelstr)
 	}
 	debug.output(out)
-	return
+	return debug
 }
 
+// Special methods.
+
 // Issue warning to debug output.
-func (debug *DebugLogger) Warn(msgConfig *DebugMessageConfig, msg string, a ...interface{}) *DebugLogger {
-	debug.messageHandler(msgConfig, "WARNING", msg, a...)
-	return debug
+func (debug *DebugLogger) Warn(msg string, a ...interface{}) *DebugLogger {
+	return debug.messageHandler(DEBUG_PART, "WARNING", msg, a...)
 }
 
 // Issue error to debug output.  Always use full caller logging.
@@ -231,6 +241,20 @@ func (debug *DebugLogger) Error(err error) error {
 		debug.messageHandler(DEBUG_FULL, "ERROR", err.Error())
 	}
 	return err
+}
+
+// Checkpoint a location in the code.
+func (debug *DebugLogger) Check(msg string, a ...interface{}) *DebugLogger {
+	return debug.messageHandler(DEBUG_PART, "CHECKPOINT", msg, a...)
+}
+
+// Dump a slice of lines to the logger.
+func (debug *DebugLogger) Dump(lines []string, msg string, a ...interface{}) *DebugLogger {
+	debug.messageHandler(DEBUG_PART, "DUMP", msg, a...)
+	for _, line := range lines {
+		debug.messageHandler(DEBUG_NIL, "", line)
+	}
+	return debug
 }
 
 // Format a byte slice as a hex string with spaces.

@@ -144,7 +144,7 @@ func (server *Server) Start(passhash string) {
 	http.Handle("/css/", http.FileServer(http.Dir("./web")))
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 	http.HandleFunc("/logbase", server.WebsocketSession)
-	server.Debug.Advise(DMC0, "Listening on port %s...", service)
+	server.Debug.Advise("Listening on port %s...", service)
 	listener, err := net.Listen("tcp", service)
 	if server.Debug.Error(err) == nil {
 		server.listener = listener
@@ -158,7 +158,7 @@ func (server *Server) Start(passhash string) {
 }
 
 func (server *Server) GracefulShutdown() {
-	server.Debug.Advise(DMC0, "Gracefully shutting down...")
+	server.Debug.Advise("Gracefully shutting down...")
 	return
 }
 
@@ -179,10 +179,10 @@ func (server *Server) Init(passhash string) {
 	}
 
 	server.Debug.SetLevel(config.DEBUG_LEVEL)
-	server.Debug.Advise(DMC0, "Server id = %s", server.Id())
-	server.Debug.Advise(DMC0, "config = %+v", config)
+	server.Debug.Advise("Server id = %s", server.Id())
+	server.Debug.Advise("config = %+v", config)
 	server.basedir = config.DEFAULT_BASEDIR
-	server.Debug.Advise(DMC0,
+	server.Debug.Advise(
 		"Directory in which to look for logbases = %s",
 		server.basedir)
 
@@ -204,7 +204,7 @@ func (server *Server) Init(passhash string) {
 // server shutdown flag on.
 func (server *Server) CloseFileChecker() {
 	server.Debug.Error(os.RemoveAll(CLOSEFILE_PATH))
-	server.Debug.Basic(DMC0,
+	server.Debug.Basic(
 		"Started close file checker (triggers shutdown if %q file appears)",
 		CLOSEFILE_PATH)
 	var err error
@@ -212,8 +212,7 @@ func (server *Server) CloseFileChecker() {
 		<-time.After(time.Duration(CHECK_CLOSEFILE_SECS) * time.Second)
 		_, err = os.Stat(CLOSEFILE_PATH)
 		if !os.IsNotExist(err) {
-			server.Debug.Advise(DMC0,
-				"Close file detected, triggering shutdown")
+			server.Debug.Advise("Close file detected, triggering shutdown")
 			server.shutdown = true
 			server.listener.Close()
 			break
@@ -242,7 +241,7 @@ func (server *Server) Open(lbPath, user, passhash string) (lbase *Logbase, err e
 // Collect and respond to socket messages.  When this function finishes, the
 // websocket is closed.
 func (server *Server) WebsocketSession(w http.ResponseWriter, r *http.Request) {
-	server.Debug.Fine(DMC0, "Enter SocketSession")
+	server.Debug.Fine("Enter SocketSession")
 	ws, err :=
 		websocket.Upgrade(
 			w,                    // any responder that supports http.Hijack
@@ -276,11 +275,11 @@ func (server *Server) WebsocketSession(w http.ResponseWriter, r *http.Request) {
 		/*
 		if op == websocket.OpBinary {
 			n, err = r.Read(inbyts)
-			server.Debug.Fine(DEBUG_DEFAULT, "Msg rx: %v", inbyts[:n])
+			server.Debug.Fine("Msg rx: %v", inbyts[:n])
 			bfr := bufio.NewReader(bytes.NewBuffer(inbyts[:n]))
 			binary.Read(bfr, binary.BigEndian, &cmd)
 			if cmd == CLOSE {
-				server.Debug.Fine(DEBUG_DEFAULT, "SocketSession closed by client")
+				server.Debug.Fine("SocketSession closed by client")
 				break
 			}
 			go server.RespondToBinary(cmd, inbyts[CMDSIZE:n], w)
@@ -290,7 +289,7 @@ func (server *Server) WebsocketSession(w http.ResponseWriter, r *http.Request) {
 			buf := new(bytes.Buffer)
 			buf.ReadFrom(r)
 			intxt := buf.String()
-			server.Debug.Fine(DMC0, "SocketSession incoming: %q", intxt)
+			server.Debug.Fine("SocketSession incoming: %q", intxt)
 			words := strings.Split(intxt, " ")
 			//decoder := json.NewDecoder(r)
 			//err = decoder.Decode(&intxt)
@@ -300,7 +299,7 @@ func (server *Server) WebsocketSession(w http.ResponseWriter, r *http.Request) {
 			//}
 			cmd := Cmdmap[words[0]]
 			if cmd == CLOSE {
-				server.Debug.Fine(DMC0, "SocketSession closed by client")
+				server.Debug.Fine("SocketSession closed by client")
 				break
 			}
 			server.Respond(session, cmd, words[1:], w)
@@ -321,7 +320,7 @@ func (server *Server) Respond(session *WebsocketSession, cmd CMD, args []string,
 	case LIST_LOGBASES:
 		list, err := server.ListLogbases()
 		server.Debug.Error(err)
-		server.Debug.Basic(DMC0, "List logbases: %s", list)
+		server.Debug.Basic("List logbases: %s", list)
 		return
 	case PUT_PAIR:
 		return
@@ -333,7 +332,7 @@ func (server *Server) Respond(session *WebsocketSession, cmd CMD, args []string,
 
 func (server *Server) ListLogbases() (paths []string, err error) {
 	var nscan int = 0
-	server.Debug.Basic(DMC0, "Compiling list of logbases in %s", server.basedir)
+	server.Debug.Basic("Compiling list of logbases in %s", server.basedir)
 	findTopLevelDir :=
 			func(fpath string, fileInfo os.FileInfo, inerr error) (err error) {
 			stat, err := os.Stat(fpath)

@@ -75,8 +75,8 @@ func ErrIntMismatch(msg string) *AppError {
 
 // Key not found.
 
-func FmtErrKeyNotFound(keystr string) *AppError {
-	return ErrKeyNotFound(fmt.Sprintf("Key %q not found.", keystr))
+func FmtErrKeyNotFound(key interface{}) *AppError {
+	return ErrKeyNotFound(fmt.Sprintf("Key %v not found.", key))
 }
 
 func ErrKeyNotFound(msg string) *AppError {
@@ -121,6 +121,16 @@ func FmtErrBadArgs(msg string, a ...interface{}) *AppError {
 
 func ErrBadArgs(msg string) *AppError {
 	return makeAppError().Describe(msg, "bad_arguments")
+}
+
+// Bad type.
+
+func FmtErrBadType(msg string, a ...interface{}) *AppError {
+	return ErrBadType(fmt.Sprintf(msg, a...))
+}
+
+func ErrBadType(msg string) *AppError {
+	return makeAppError().Describe(msg, "bad_type")
 }
 
 // Unexpected data size.

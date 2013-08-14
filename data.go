@@ -15,29 +15,33 @@ import (
 	"sync"
 )
 
+var BIGEND binary.ByteOrder = binary.BigEndian
+
 const (
 	LOG_RECORD int = iota
 	INDEX_RECORD
 	MASTER_RECORD
 	ZAP_RECORD
-)
-
-const (
-    VALTYPE_BYTES VALTYPE	= 0 // Default
-	VALTYPE_LOCATION		= 1 // file path, URI
-    VALTYPE_STRING          = 2
-	VALTYPE_GOB             = 3 // Golang gob
-	VALTYPE_INT             = 4
-	VALTYPE_TIME            = 50
+	PERMISSION_RECORD
 )
 
 // Whether to read a value size after the key size when using the
 // GenericRecord to read these various record types.
 var DoReadDataValueSize = map[int]bool{
-	LOG_RECORD:     true,
-	INDEX_RECORD:   false,
-	MASTER_RECORD:  false,
-	ZAP_RECORD:     true,
+	LOG_RECORD:			true,
+	INDEX_RECORD:		false,
+	MASTER_RECORD:		false,
+	ZAP_RECORD:			true,
+	PERMISSION_RECORD:  false,
+}
+
+// Whether to snip the type of a value from the stored value bytes.
+var DoSnipValueType = map[int]bool{
+	LOG_RECORD:			true,
+	INDEX_RECORD:		false,
+	MASTER_RECORD:		false,
+	ZAP_RECORD:			false,
+	PERMISSION_RECORD:	false,
 }
 
 // Data containers.
@@ -47,9 +51,19 @@ type Kdata struct {
 	key     []byte
 }
 
+// Key type.
+type Ktype struct {
+	ktype   KVTYPE
+}
+
 // Value data container.
 type Vdata struct {
 	val     []byte
+}
+
+// Value type.
+type Vtype struct {
+	vtype   KVTYPE
 }
 
 // Key size in bytes.
@@ -79,10 +93,12 @@ type Rpos struct {
 
 // Provide a generic record file for "IO read infrastructure".
 type GenericRecord struct {
-	*Ksize
-	*Vsize
+	*Ksize  // typed key, that is including KVTYPE
+	*Vsize  // typed value, that is including KVTYPE
 	*Kdata
+	*Ktype
 	*Vdata
+	*Vtype
 	*Vpos
 }
 
@@ -92,7 +108,9 @@ func NewGenericRecord() *GenericRecord {
 		Ksize: &Ksize{},
 		Vsize: &Vsize{},
 		Kdata: &Kdata{},
+		Ktype: &Ktype{},
 		Vdata: &Vdata{},
+		Vtype: &Vtype{},
 		Vpos: &Vpos{},
 	}
 }
@@ -100,10 +118,12 @@ func NewGenericRecord() *GenericRecord {
 // Define a log file record.
 type LogRecord struct {
 	crc     LBUINT // cyclic redundancy check
-	*Ksize
-	*Vsize
+	*Ksize  // typed key, that is including KVTYPE
+	*Vsize	// typed value, that is including KVTYPE
 	*Kdata
+	*Ktype
 	*Vdata
+	*Vtype
 }
 
 // Init a LogRecord.
@@ -112,7 +132,9 @@ func NewLogRecord() *LogRecord {
 		Ksize: &Ksize{},
 		Vsize: &Vsize{},
 		Kdata: &Kdata{},
+		Ktype: &Ktype{},
 		Vdata: &Vdata{},
+		Vtype: &Vtype{},
 	}
 }
 
@@ -120,6 +142,7 @@ func NewLogRecord() *LogRecord {
 type IndexRecord struct {
 	*IndexRecordHeader
 	*Kdata
+	*Ktype
 }
 
 // Init a IndexRecord.
@@ -127,13 +150,14 @@ func NewIndexRecord() *IndexRecord {
 	return &IndexRecord{
 		IndexRecordHeader: NewIndexRecordHeader(),
 		Kdata: &Kdata{},
+		Ktype: &Ktype{},
 	}
 }
 
 // Define the header for an index file record.
 type IndexRecordHeader struct {
-	*Ksize
-	*Vsize
+	*Ksize  // typed key, that is including KVTYPE  
+	*Vsize  // typed value, that is including KVTYPE
 	*Vpos
 }
 
@@ -149,7 +173,7 @@ func NewIndexRecordHeader() *IndexRecordHeader {
 // Define the location and size of a value.
 type ValueLocation struct {
 	fnum    LBUINT // log files indexed sequentially from 0
-	*Vsize
+	*Vsize	// typed value, that is including KVTYPE
 	*Vpos
 }
 
@@ -201,17 +225,31 @@ func NewZapRecord() *ZapRecord {
 	}
 }
 
+// Define a record used in the user permission index.
+type UserPermissionRecord struct {
+	*Permission
+}
+
+// Init a UserPermissionRecord.
+func NewUserPermissionRecord() *UserPermissionRecord {
+	return &UserPermissionRecord{
+		Permission: new(Permission),
+	}
+}
+
 // Used by ReadRecord to read generic (packed) value size.
 var GenericValueSize = map[int]LBUINT{
-	LOG_RECORD:     0, // not used
-	INDEX_RECORD:   ValSizePosBytes(),
-	MASTER_RECORD:  ValueLocationBytes(),
-	ZAP_RECORD:     0, // not used
+	LOG_RECORD:			0, // not used
+	INDEX_RECORD:		ValSizePosBytes(),
+	MASTER_RECORD:		ValueLocationBytes(),
+	ZAP_RECORD:			0, // not used
+	PERMISSION_RECORD:  PermissionBytes(),
 }
 
 func ValSizePosBytes() LBUINT {return LBUINT_SIZE_x2}
 func ValueLocationBytes() LBUINT {return LBUINT_SIZE_x3}
 func RecordLocationBytes() LBUINT {return LBUINT_SIZE_x3}
+func PermissionBytes() LBUINT {return LBUINT(1)}
 
 // Logbase level.
 
@@ -222,30 +260,62 @@ type Index struct {
 
 //  Master catalog of all live (not stale) key-value pairs.
 type MasterCatalog struct {
-	index   map[string]*MasterCatalogRecord // The in-memory index
+	index   map[interface{}]*MasterCatalogRecord // The in-memory index
 	file    *Masterfile
 	sync.RWMutex
+	changed	bool // Has index changed since last save?
 }
 
 // Init a MasterCatalog.
 func NewMasterCatalog() *MasterCatalog {
 	return &MasterCatalog{
-		index: make(map[string]*MasterCatalogRecord),
+		index: make(map[interface{}]*MasterCatalogRecord),
 	}
 }
 
 //  Stale key-value pairs scheduled to be deleted from log files.
 type Zapmap struct {
-	zapmap  map[string][]*ZapRecord // "Zapmap"
+	zapmap  map[interface{}][]*ZapRecord // "Zapmap"
 	file    *Zapfile
 	sync.RWMutex
+	changed	bool // Has map changed since last save?
 }
 
 // Init a Zapmap, which points to stale data scheduled for deletion.
 func NewZapmap() *Zapmap {
 	return &Zapmap{
-		zapmap: make(map[string][]*ZapRecord),
+		zapmap: make(map[interface{}][]*ZapRecord),
 	}
+}
+
+// All users of the logbase.
+type Users struct {
+	perm	map[string]*UserPermissions
+}
+
+// Init a Users object.
+func NewUsers() *Users {
+	return &Users{
+		perm: make(map[string]*UserPermissions),
+	}
+}
+
+//  User permission index allowing k-v pair level security.
+type UserPermissions struct {
+	index   map[interface{}]*UserPermissionRecord // The in-memory index
+	file    *UserPermissionFile
+	sync.RWMutex
+	pass	string
+	changed	bool // Has index changed since last save?
+}
+
+// Init a UserPermissions object.
+func NewUserPermissions(p *Permission) *UserPermissions {
+	up := &UserPermissions{
+		index: make(map[interface{}]*UserPermissionRecord),
+	}
+	up.Put(uint8(0), &UserPermissionRecord{p}) // Default
+	return up
 }
 
 // Logbase methods.
@@ -254,29 +324,106 @@ func NewZapmap() *Zapmap {
 // an individual log file, and add an existing (stale) value entry to the
 // zapmap.
 func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
-	keystr := string(irec.key)
 	newmcr := NewMasterCatalogRecord()
 	newmcr.FromIndexRecord(irec, fnum)
-	lbase.mcat.RLock() // other reads ok
-	oldmcr, exists := lbase.mcat.index[keystr]
-	lbase.mcat.RUnlock()
+	key := GetKey(irec.key, irec.ktype, lbase.debug)
+	oldmcr := lbase.mcat.Get(key)
 
-	if exists {
+	if oldmcr != nil {
 		// Add to zapmap
-		var zrecs []*ZapRecord
-		zrecs, _ = lbase.zmap.zapmap[keystr]
 		zrec := NewZapRecord()
-		zrec.FromMasterCatalogRecord(keystr, oldmcr)
-		zrecs = append(zrecs, zrec)
-		lbase.zmap.Lock()
-		lbase.zmap.zapmap[keystr] = zrecs
-		lbase.zmap.Unlock()
+		zrec.FromMasterCatalogRecord(irec.ksz, oldmcr)
+		lbase.zmap.PutRecord(key, zrec)
 	}
 
 	// Update the master catalog
-	lbase.mcat.Lock()
-	lbase.mcat.index[keystr] = newmcr
-	lbase.mcat.Unlock()
+	lbase.mcat.Put(key, newmcr)
+	return
+}
+
+// Gateway for reading from master catalog.
+func (mcat *MasterCatalog) Get(key interface{}) *MasterCatalogRecord {
+	mcat.RLock() // other reads ok
+	mcr := mcat.index[key]
+	mcat.RUnlock()
+	return mcr
+}
+
+// Gateway for writing to master catalog.
+func (mcat *MasterCatalog) Put(key interface{}, mcr *MasterCatalogRecord) {
+	mcat.Lock()
+	mcat.index[key] = mcr
+	mcat.Unlock()
+	mcat.changed = true
+	return
+}
+
+// Gateway for removing entire entry from master catalog.
+func (mcat *MasterCatalog) Delete(key interface{}) {
+	mcat.Lock()
+	delete(mcat.index, key)
+	mcat.Unlock()
+	mcat.changed = true
+	return
+}
+
+// Gateway for reading from zapmap.
+func (zmap *Zapmap) Get(key interface{}) []*ZapRecord {
+	zmap.RLock() // other reads ok
+	zrecs := zmap.zapmap[key]
+	zmap.RUnlock()
+	return zrecs
+}
+
+// Gateway for adding single record into to zapmap.
+func (zmap *Zapmap) PutRecord(key interface{}, zrec *ZapRecord) {
+	zrecs := zmap.Get(key)
+	zrecs = append(zrecs, zrec)
+	zmap.Put(key, zrecs)
+	return
+}
+
+// Gateway for adding entire record slice into to zapmap.
+func (zmap *Zapmap) Put(key interface{}, zrecs []*ZapRecord) {
+	zmap.Lock()
+	zmap.zapmap[key] = zrecs
+	zmap.Unlock()
+	zmap.changed = true
+	return
+}
+
+// Gateway for removing entire entry from zapmap.
+func (zmap *Zapmap) Delete(key interface{}) {
+	zmap.Lock()
+	delete(zmap.zapmap, key)
+	zmap.Unlock()
+	zmap.changed = true
+	return
+}
+
+// Gateway for reading from user permission index.
+func (up *UserPermissions) Get(key interface{}) *UserPermissionRecord {
+	up.RLock() // other reads ok
+	upr := up.index[key]
+	up.RUnlock()
+	return upr
+}
+
+// Gateway for writing to user permission index.
+func (up *UserPermissions) Put(key interface{}, upr *UserPermissionRecord) {
+	up.Lock()
+	up.index[key] = upr
+	up.Unlock()
+	up.changed = true
+	return
+}
+
+// Gateway for removing entire entry from user permission index.
+func (up *UserPermissions) Delete(key interface{}) {
+	up.Lock()
+	delete(up.index, key)
+	up.Unlock()
+	up.changed = true
 	return
 }
 
@@ -308,22 +455,46 @@ func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
 		zrec.rpos == other.rpos)
 }
 
-// Interchanges.
+// Unpacking and interchanges.
 
-func InjectValueType(valtype VALTYPE, val []byte) []byte {
+// Inject type byte(s) at start of key or value byte slice.
+func InjectType(x []byte, typ KVTYPE) []byte {
 	bfr := new(bytes.Buffer)
-	binary.Write(bfr, binary.BigEndian, valtype)
-	bfr.Write(val)
+	binary.Write(bfr, BIGEND, typ)
+	bfr.Write(x)
 	return bfr.Bytes()
 }
 
-func SnipValueType(val []byte) ([]byte, VALTYPE) {
-	bfr := bufio.NewReader(bytes.NewBuffer(val))
-	var valtype VALTYPE
-	binary.Read(bfr, binary.BigEndian, &valtype)
-	newval := make([]byte, len(val) - VALTYPE_SIZE) // must have fixed size
-	binary.Read(bfr, binary.BigEndian, &newval)
-	return newval, valtype
+// Convert the given key to a byte representation.  Handles either
+// Go numbers or strings.
+func KeyToBytes(key interface{}) []byte {
+	bfr := new(bytes.Buffer)
+	str, ok := key.(string)
+	if ok {key = []byte(str)}
+	binary.Write(bfr, BIGEND, key)
+	return bfr.Bytes()
+}
+
+// Inject the key type into the byte representation of the key, in
+// one step.
+func InjectKeyType(key interface{}, debug *DebugLogger) []byte {
+	kbyts := KeyToBytes(key)
+	ktype := GetKeyType(key, debug)
+	return InjectType(kbyts, ktype)
+}
+
+func SnipValueType(val []byte) (newval []byte, vtype KVTYPE) {
+	bfr := bufio.NewReader(bytes.NewBuffer(val[:KVTYPE_SIZE]))
+	binary.Read(bfr, BIGEND, &vtype)
+	newval = val[KVTYPE_SIZE:]
+	return
+}
+
+func SnipKeyType(key []byte)  (newkey []byte, ktype KVTYPE) {
+	bfr := bufio.NewReader(bytes.NewBuffer(key[:KVTYPE_SIZE]))
+	binary.Read(bfr, BIGEND, &ktype)
+	newkey	= key[KVTYPE_SIZE:]
+	return
 }
 
 func (vl *ValueLocation) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
@@ -332,9 +503,9 @@ func (vl *ValueLocation) FromIndexRecord(irec *IndexRecord, fnum LBUINT) {
 	vl.vpos = irec.vpos
 }
 
-func (zrec *ZapRecord) FromMasterCatalogRecord(keystr string, mcr *MasterCatalogRecord) {
+func (zrec *ZapRecord) FromMasterCatalogRecord(ksz LBUINT, mcr *MasterCatalogRecord) {
 	zrec.fnum = mcr.fnum
-	rsz, rpos := mcr.LogRecordSizePosition(keystr)
+	rsz, rpos := mcr.LogRecordSizePosition(ksz)
 	zrec.rsz = rsz
 	zrec.rpos = rpos
 }
@@ -345,11 +516,13 @@ func (rec *GenericRecord) ToLogRecord() *LogRecord {
 	lrec.ksz = rec.ksz
 	lrec.vsz = rec.vsz - CRC_SIZE
 	lrec.key = rec.key
+	lrec.ktype = rec.ktype
+	lrec.vtype = rec.vtype
 	// Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
 	lrec.val = make([]byte, lrec.vsz) // must have fixed size
-	binary.Read(bfr, binary.BigEndian, &lrec.val)
-	binary.Read(bfr, binary.BigEndian, &lrec.crc)
+	binary.Read(bfr, BIGEND, &lrec.val)
+	binary.Read(bfr, BIGEND, &lrec.crc)
 	return lrec
 }
 
@@ -358,10 +531,11 @@ func (rec *GenericRecord) ToIndexRecord() *IndexRecord {
 	irec := NewIndexRecord()
 	irec.ksz = rec.ksz
 	irec.key = rec.key
+	irec.ktype = rec.ktype
 	// Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
-	binary.Read(bfr, binary.BigEndian, &irec.vsz)
-	binary.Read(bfr, binary.BigEndian, &irec.vpos)
+	binary.Read(bfr, BIGEND, &irec.vsz)
+	binary.Read(bfr, BIGEND, &irec.vpos)
 	return irec
 }
 
@@ -371,72 +545,94 @@ func (lrec *LogRecord) ToIndexRecord() *IndexRecord {
 	irec.ksz = lrec.ksz
 	irec.vsz = lrec.vsz
 	irec.key = lrec.key
+	irec.ktype = lrec.ktype
 	return irec
 }
 
+// Map GenericRecord to a new MasterLogRecord.
+func (rec *GenericRecord) ToMasterCatalogRecord(debug *DebugLogger) (interface{}, *MasterCatalogRecord) {
+	key := GetKey(rec.key, rec.ktype, debug)
+	mcr := NewMasterCatalogRecord()
+	// Unpack
+	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
+	binary.Read(bfr, BIGEND, &mcr.fnum)
+	binary.Read(bfr, BIGEND, &mcr.vsz)
+	binary.Read(bfr, BIGEND, &mcr.vpos)
+	return key, mcr
+}
+
 // Map GenericRecord to a new ZapRecord list.
-func (rec *GenericRecord) ToZapRecordList() (string, []*ZapRecord) {
-	var keystr string = string(rec.key)
+func (rec *GenericRecord) ToZapRecordList(debug *DebugLogger) (interface{}, []*ZapRecord) {
+	key := GetKey(rec.key, rec.ktype, debug)
 	n := rec.LocationListLength()
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
 	var zrecs = make([]*ZapRecord, n)
 	for i := 0; i < n; i++ {
 		zrecs[i] = NewZapRecord()
-	    binary.Read(bfr, binary.BigEndian, &zrecs[i].fnum)
-	    binary.Read(bfr, binary.BigEndian, &zrecs[i].rsz)
-	    binary.Read(bfr, binary.BigEndian, &zrecs[i].rpos)
+	    binary.Read(bfr, BIGEND, &zrecs[i].fnum)
+	    binary.Read(bfr, BIGEND, &zrecs[i].rsz)
+	    binary.Read(bfr, BIGEND, &zrecs[i].rpos)
 	}
-	return keystr, zrecs
-}
-// Map GenericRecord to a new MasterLogRecord.
-func (rec *GenericRecord) ToMasterCatalogRecord() *MasterCatalogRecord {
-	mcr := NewMasterCatalogRecord()
-	// Unpack
-	bfr := bufio.NewReader(bytes.NewBuffer(rec.val))
-	binary.Read(bfr, binary.BigEndian, &mcr.fnum)
-	binary.Read(bfr, binary.BigEndian, &mcr.vsz)
-	binary.Read(bfr, binary.BigEndian, &mcr.vpos)
-	return mcr
+	return key, zrecs
 }
 
-// Formatted output.
+// Map GenericRecord to a new UserPermissionRecord.
+func (rec *GenericRecord) ToUserPermissionRecord(debug *DebugLogger) (interface{}, *UserPermissionRecord) {
+	key := GetKey(rec.key, rec.ktype, debug)
+	upr := NewUserPermissionRecord()
+	// Unpack
+	var p uint8 = uint8(rec.val[0])
+	upr.Create = PERMISSION_CREATE == (p & PERMISSION_CREATE)
+	upr.Read = PERMISSION_READ == (p & PERMISSION_READ)
+	upr.Update = PERMISSION_UPDATE == (p & PERMISSION_UPDATE)
+	upr.Delete = PERMISSION_DELETE == (p & PERMISSION_DELETE)
+	fmt.Printf("CHECK key=%v upr=%v\n", key, upr)
+	return key, upr
+}
+
+// Formatted output for debugging.
 
 // Return string representation of a GenericRecord for debugging.
 func (rec *GenericRecord) String() string {
 	return fmt.Sprintf(
-		"(ksz %d, vsz %d, key %q, val %q, vpos %d)",
+		"(ksz=%d vsz=%d key=%q ktype=%d val=%q vtype=%d vpos=%d)",
 		rec.ksz,
 		rec.vsz,
 		string(rec.key),
+		rec.ktype,
 		string(rec.val),
+		rec.vtype,
 		rec.vpos)
 }
 
 // Return string representation of a GenericRecord for debugging.
 func (lrec *LogRecord) String() string {
 	return fmt.Sprintf(
-		"(%d,%d,%q,%q,%d)",
+		"(ksz=%d vsz=%d key=%q ktype=%d val=%q vtype=%d crc=%d)",
 		lrec.ksz,
 		lrec.vsz,
 		string(lrec.key),
+		lrec.ktype,
 		string(lrec.val),
+		lrec.vtype,
 		lrec.crc)
 }
 
 // Return string representation of an IndexRecord.
 func (irec *IndexRecord) String() string {
 	return fmt.Sprintf(
-		"(%d,%d,%d,%q)",
+		"(ksz=%d vpos=%d vsz=%d key=%q ktype=%d)",
 		irec.ksz,
 		irec.vpos,
 		irec.vsz,
-		string(irec.key))
+		string(irec.key),
+		irec.ktype)
 }
 
 // Return string representation of a MasterCatalogRecord.
 func (mcr *MasterCatalogRecord) String() string {
 	return fmt.Sprintf(
-		"(%d,%d,%d)",
+		"(fnum=%d vpos=%d vsz=%d)",
 		mcr.fnum,
 		mcr.vpos,
 		mcr.vsz)
@@ -445,7 +641,7 @@ func (mcr *MasterCatalogRecord) String() string {
 // Return string representation of a ZapRecord.
 func (zrec *ZapRecord) String() string {
 	return fmt.Sprintf(
-		"(%d,%d,%d)",
+		"(fnum=%d rpos=%d rsz=%d)",
 		zrec.fnum,
 		zrec.rpos,
 		zrec.rsz)
@@ -453,7 +649,7 @@ func (zrec *ZapRecord) String() string {
 
 // LBUINT related functions.
 
-func (i LBUINT) plus(other int) LBUINT {
+func (i LBUINT) Plus(other int) LBUINT {
 	ans := int(i) + other
 	return AsLBUINT(ans)
 }
@@ -491,67 +687,98 @@ func (mcr *MasterCatalogRecord) ReadVal(lbase *Logbase) (val []byte, err error) 
 
 // Byte packing functions.
 
-func MakeLogRecord(keystr string, val []byte) *LogRecord {
+func MakeLogRecord(key interface{}, val []byte, vtype KVTYPE, debug *DebugLogger) *LogRecord {
 	lrec := NewLogRecord()
-	lrec.key = []byte(keystr)
-	lrec.ksz = AsLBUINT(len(lrec.key))
+	ktype := GetKeyType(key, debug)
+	kbyts := KeyToBytes(key)
+	lrec.key = kbyts
+	lrec.ktype = ktype
+	lrec.ksz = AsLBUINT(len(kbyts) + KVTYPE_SIZE)
 	lrec.val = val
-	lrec.vsz = AsLBUINT(len(val))
+	lrec.vtype = vtype
+	lrec.vsz = AsLBUINT(len(val) + KVTYPE_SIZE)
 	return lrec
 }
 
-// Return a buffer with a log record packed ready for file writing.
+// Return a byte slice with a log record packed ready for file writing.
 func (lrec *LogRecord) Pack() []byte {
 	bfr := new(bytes.Buffer)
-	binary.Write(bfr, binary.BigEndian, lrec.ksz)
-	binary.Write(bfr, binary.BigEndian, lrec.vsz + CRC_SIZE)
-	bfr.Write(lrec.key)
-	bfr.Write(lrec.val)
+	binary.Write(bfr, BIGEND, lrec.ksz)
+	binary.Write(bfr, BIGEND, lrec.vsz + CRC_SIZE)
+	bfr.Write(InjectType(lrec.key, lrec.ktype))
+	bfr.Write(InjectType(lrec.val, lrec.vtype))
 
 	// Calculate the checksum
 	lrec.crc = LBUINT(crc32.ChecksumIEEE(bfr.Bytes()))
-	binary.Write(bfr, binary.BigEndian, lrec.crc)
+	binary.Write(bfr, BIGEND, lrec.crc)
 	return bfr.Bytes()
 }
 
-// Return a buffer with a log file index record packed ready for file writing.
+// Return a byte slice with a log file index record packed ready for file
+// writing.
 func (irec *IndexRecord) Pack() []byte {
 	bfr := new(bytes.Buffer)
-	binary.Write(bfr, binary.BigEndian, irec.ksz)
-	bfr.Write(irec.key)
-	binary.Write(bfr, binary.BigEndian, irec.vsz)
-	binary.Write(bfr, binary.BigEndian, irec.vpos)
+	binary.Write(bfr, BIGEND, irec.ksz)
+	bfr.Write(InjectType(irec.key, irec.ktype))
+	binary.Write(bfr, BIGEND, irec.vsz)
+	binary.Write(bfr, BIGEND, irec.vpos)
 	return bfr.Bytes()
 }
 
-// Return a buffer with a zapmap record packed ready for file writing.
-func PackZapRecord(keystr string, zrecs []*ZapRecord) []byte {
+// Return a byte slice with a zapmap record packed ready for file writing.
+func PackZapRecord(key interface{}, zrecs []*ZapRecord, debug *DebugLogger) []byte {
 	bfr := new(bytes.Buffer)
-	key := []byte(keystr)
-	ksz := AsLBUINT(len(key))
+	kbyts := InjectKeyType(key, debug)
+	ksz := AsLBUINT(len(kbyts))
 	n := AsLBUINT(len(zrecs)) * ValueLocationBytes()
-	binary.Write(bfr, binary.BigEndian, ksz)
-	binary.Write(bfr, binary.BigEndian, n)
-	bfr.Write(key)
+	binary.Write(bfr, BIGEND, ksz)
+	binary.Write(bfr, BIGEND, n)
+	bfr.Write(kbyts)
 	for _, zrec := range zrecs {
-	    binary.Write(bfr, binary.BigEndian, zrec.fnum)
-	    binary.Write(bfr, binary.BigEndian, zrec.rsz)
-	    binary.Write(bfr, binary.BigEndian, zrec.rpos)
+	    binary.Write(bfr, BIGEND, zrec.fnum)
+	    binary.Write(bfr, BIGEND, zrec.rsz)
+	    binary.Write(bfr, BIGEND, zrec.rpos)
 	}
 	return bfr.Bytes()
 }
 
-// Return a buffer with a master catalog record packed ready for file writing.
-func PackMasterRecord(keystr string, mcr *MasterCatalogRecord) []byte {
+// Return a byte slice with a master catalog record packed ready for file
+// writing.
+func PackMasterRecord(key interface{}, mcr *MasterCatalogRecord, debug *DebugLogger) []byte {
 	bfr := new(bytes.Buffer)
-	key := []byte(keystr)
-	ksz := AsLBUINT(len(key))
-	binary.Write(bfr, binary.BigEndian, ksz)
-	bfr.Write(key)
-	binary.Write(bfr, binary.BigEndian, mcr.fnum)
-	binary.Write(bfr, binary.BigEndian, mcr.vsz)
-	binary.Write(bfr, binary.BigEndian, mcr.vpos)
+	kbyts := InjectKeyType(key, debug)
+	ksz := AsLBUINT(len(kbyts))
+	binary.Write(bfr, BIGEND, ksz)
+	bfr.Write(kbyts)
+	binary.Write(bfr, BIGEND, mcr.fnum)
+	binary.Write(bfr, BIGEND, mcr.vsz)
+	binary.Write(bfr, BIGEND, mcr.vpos)
 	return bfr.Bytes()
+}
+
+// Return a byte slice with a user permission record packed ready for file
+// writing.
+func PackUserPermissionRecord(key interface{}, upr *UserPermissionRecord, debug *DebugLogger) []byte {
+	bfr := new(bytes.Buffer)
+	kbyts := InjectKeyType(key, debug)
+	ksz := AsLBUINT(len(kbyts))
+	binary.Write(bfr, BIGEND, ksz)
+	bfr.Write(kbyts)
+	bfr.Write(PackPermission(upr))
+	return bfr.Bytes()
+}
+
+func PackPermission(upr *UserPermissionRecord) []byte {
+	return []byte{
+		BoolToUint8(upr.Create) * PERMISSION_CREATE +
+		BoolToUint8(upr.Read) * PERMISSION_READ +
+		BoolToUint8(upr.Update) * PERMISSION_UPDATE +
+		BoolToUint8(upr.Delete) * PERMISSION_DELETE,
+	}
+}
+
+func BoolToUint8(x bool) uint8 {
+	if x {return 1} else {return 0}
 }
 
 // Size calculations.
@@ -564,8 +791,7 @@ func ParamSize(param interface{}) LBUINT {
 // MasterCatalogRecords do not explicitely hold the start position and length
 // of an entire logfile record, just the value, but along with the key we have
 // enough to figure this out.
-func (mcr *MasterCatalogRecord) LogRecordSizePosition(keystr string) (size, pos LBUINT) {
-	ksz := AsLBUINT(len(keystr))
+func (mcr *MasterCatalogRecord) LogRecordSizePosition(ksz LBUINT) (size, pos LBUINT) {
 	size = LBUINT_SIZE_x2 + ksz + mcr.vsz + CRC_SIZE
 	pos = mcr.vpos - ksz - LBUINT_SIZE_x2
 	return
@@ -658,23 +884,20 @@ func (zmap *Zapmap) Find(fnum LBUINT) (rpos, rsz []LBUINT, err error) {
 
 // Delete all zapmap records associated with the given logfile number.
 func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
-	debug.Basic(DEBUG_DEFAULT, "Purge zapmap of logfile %d entries", fnum)
+	debug.Basic("Purge zapmap of logfile %d entries", fnum)
 	for key, zrecs := range zmap.zapmap {
 		var newzrecs []*ZapRecord // Make a new list to replace old
 		for _, zrec := range zrecs {
 			if zrec.fnum != fnum {
 				newzrecs = append(newzrecs, zrec)
 			} else {
-				debug.Fine(
-					DEBUG_DEFAULT,
-					"Deleting %q%s from zapmap",
-					key, zrec.String())
+				debug.Fine("Deleting %q%s from zapmap", key, zrec.String())
 			}
 		}
 		if len(newzrecs) == 0 {
-			delete(zmap.zapmap, key)
+			zmap.Delete(key)
 		} else {
-			zmap.zapmap[key] = newzrecs
+			zmap.Put(key, newzrecs)
 		}
 	}
 	return
@@ -694,5 +917,102 @@ func Degobify(byts []byte, param interface{}, debug *DebugLogger) {
 	err := dec.Decode(&param)
 	debug.Error(err)
 	return
+}
+
+func NewKey(ktype KVTYPE, debug *DebugLogger) interface{} {
+	switch ktype {
+	case KVTYPE_UINT8:
+		var p uint8
+		return interface{}(p)
+	case KVTYPE_UINT16:
+		var p uint16
+		return interface{}(p)
+	case KVTYPE_UINT32:
+		var p uint32
+		return interface{}(p)
+	case KVTYPE_UINT64:
+		var p uint64
+		return interface{}(p)
+	case KVTYPE_INT8:
+		var p int8
+		return interface{}(p)
+	case KVTYPE_INT16:
+		var p int16
+		return interface{}(p)
+	case KVTYPE_INT32:
+		var p int32
+		return interface{}(p)
+	case KVTYPE_INT64:
+		var p int64
+		return interface{}(p)
+	case KVTYPE_FLOAT32:
+		var p float32
+		return interface{}(p)
+	case KVTYPE_FLOAT64:
+		var p float64
+		return interface{}(p)
+	case KVTYPE_COMPLEX64:
+		var p complex64
+		return interface{}(p)
+	case KVTYPE_COMPLEX128:
+		var p complex128
+		return interface{}(p)
+	case KVTYPE_STRING:
+		var p string
+		return interface{}(p)
+	default:
+		debug.Error(FmtErrBadType("Bad key type: %d", ktype))
+	}
+    return nil
+}
+
+func GetKey(kbyts []byte, ktype KVTYPE, debug *DebugLogger) (key interface{}) {
+	if IsFixedSizeType(ktype) {
+		key = NewKey(ktype, debug)
+		bfr := bufio.NewReader(bytes.NewBuffer(kbyts))
+		binary.Read(bfr, BIGEND, &key)
+	} else {
+		// Must be a string
+		key = string(kbyts)
+	}
+    return
+}
+
+func IsFixedSizeType(typ KVTYPE) bool {
+    return typ < KVTYPE_BYTEARRAY
+}
+
+func GetKeyType(key interface{}, debug *DebugLogger) KVTYPE {
+	switch ktype := key.(type) {
+	case uint8:
+		return KVTYPE_UINT8
+	case uint16:
+		return KVTYPE_UINT16
+	case uint32:
+		return KVTYPE_UINT32
+	case uint64:
+		return KVTYPE_UINT64
+	case int8:
+		return KVTYPE_INT8
+	case int16:
+		return KVTYPE_INT16
+	case int32:
+		return KVTYPE_INT32
+	case int64:
+		return KVTYPE_INT64
+	case float32:
+		return KVTYPE_FLOAT32
+	case float64:
+		return KVTYPE_FLOAT64
+	case complex64:
+		return KVTYPE_COMPLEX64
+	case complex128:
+		return KVTYPE_COMPLEX128
+	case string:
+		return KVTYPE_STRING
+	default:
+		debug.Error(FmtErrBadType("Unrecognised key type: %d", ktype))
+	}
+    return KVTYPE_NIL
 }
 

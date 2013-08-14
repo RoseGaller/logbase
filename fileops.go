@@ -12,6 +12,7 @@
 	GVS     Generic Value size (used by ReadRecord)
 	VP      Value position
 	F       File number
+	P		Permission
 	C       Checksum
 	RS      (Entire) Record size
 	RP      (Entire) Record position
@@ -54,13 +55,21 @@
 	|      |      |             |      :      :      |      :      :      |
 	+------+------+------+------+------+------+------+------+------+------+
 			                    |<------------------- GV ---------------->|
+
+	USER PERMISSION RECORD (PERMISSION_RECORD)
+	+------+------+------+------+
+	|      |             |      |
+	|  KS  |      K      |  P   |  No GVS
+	|      |             |      |
+	+------+------+------+------+
+			             |<-GV->| = 1 byte
+
 */
 package logbase
 
 import (
 	"os"
 	"io"
-	"path"
 	"path/filepath"
 	"strings"
 	"strconv"
@@ -74,7 +83,6 @@ const (
 	LOGFILE_NAME_FORMAT     string = "%09d"
 	INDEX_FILE_EXTENSION    string = ".index"
 	STARTING_LOGFILE_NUMBER LBUINT = 1
-	TMPFILE_PREFIX          string = ".tmp."
 )
 
 // The basic unit of a logbase.
@@ -87,7 +95,7 @@ type Logfile struct {
 // Init a Logfile.
 func NewLogfile() *Logfile {
 	return &Logfile{
-		File: &File{},
+		File: NewFile(),
 		indexfile: NewIndexfile(),
 	}
 }
@@ -101,7 +109,7 @@ type Indexfile struct {
 // Init an Indexfile.
 func NewIndexfile() *Indexfile {
 	return &Indexfile{
-		File: &File{},
+		File: NewFile(),
 		Index: &Index{},
 	}
 }
@@ -126,6 +134,18 @@ type Zapfile struct {
 // Init a Zapfile.
 func NewZapfile(file *File) *Zapfile {
 	return &Zapfile{
+		File: file,
+	}
+}
+
+// Allow persistence of user permissions.
+type UserPermissionFile struct {
+	*File
+}
+
+// Init a UserPermissionFile.
+func NewUserPermissionFile(file *File) *UserPermissionFile {
+	return &UserPermissionFile{
 		File: file,
 	}
 }
@@ -174,7 +194,7 @@ func (lbase *Logbase) SetLiveLog() error {
 		}
 		if err != nil {return err}
 		lbase.livelog = lfile
-		lbase.debug.Fine(DEBUG_DEFAULT, "Set livelog as %q", lfile.abspath)
+		lbase.debug.Fine("Set livelog as %q", lfile.abspath)
 	}
 	return nil
 }
@@ -242,17 +262,51 @@ func (lbase *Logbase) MakeIndexfileRelPath(fnum LBUINT) string {
 	return MakeIndexfileName(fnum, lbase.config.INDEXFILE_NAME_EXTENSION)
 }
 
-// Save the master catalog and zapmap files for the logbase.
-func (lbase *Logbase) Save() error {
-	err := lbase.mcat.Save()
-	if err != nil {return err}
-	err = lbase.zmap.Save()
-	if err != nil {return err}
-	lbase.debug.Advise(
-		DEBUG_DEFAULT,
-		"Saved master catalog and zapmap for logbase %q",
-		lbase.name)
-	return nil
+// Assemble a list of all user permission files in the current logbase,
+// unsorted.
+func (lbase *Logbase) GetUserPermissionPaths() (usernames []string, err error) {
+	var nscan int = 0 // Number of file objects scanned
+
+	findPermissionFile := func(fpath string, fileInfo os.FileInfo, inerr error) (err error) {
+		stat, err := os.Stat(fpath)
+		if err != nil {return}
+
+		if nscan > 0 && stat.IsDir() {
+			return filepath.SkipDir
+		}
+		if nscan > 0 {usernames = append(usernames, filepath.Base(fpath))}
+		nscan++
+		return
+	}
+
+	err = filepath.Walk(lbase.UserPermissionDirPath(), findPermissionFile)
+	return
+}
+
+// Save the master catalog, zapmap and user permission files for the logbase.  Only
+// save each if there has been a change.
+func (lbase *Logbase) Save() (err error) {
+	if lbase.mcat.changed {
+		err = lbase.debug.Error(lbase.mcat.Save(lbase.debug))
+		if err != nil {return}
+		lbase.mcat.changed = false
+		lbase.debug.Advise("Saved master catalog for logbase %q", lbase.name)
+	}
+	if lbase.zmap.changed {
+		err = lbase.debug.Error(lbase.zmap.Save(lbase.debug))
+		if err != nil {return}
+		lbase.zmap.changed = false
+		lbase.debug.Advise("Saved zapmap for logbase %q", lbase.name)
+	}
+	for user, perm := range lbase.users.perm {
+		if perm.changed {
+			err = lbase.debug.Error(perm.Save(lbase.debug))
+			if err != nil {return}
+			perm.changed = false
+			lbase.debug.Advise("Saved %q permissions for logbase %q", user, lbase.name)
+		}
+	}
+	return
 }
 
 // Read the log file (given by the index) and build an associated index file.
@@ -324,7 +378,7 @@ func (lfile *Logfile) Load() ([]*LogRecord, error) {
 // both in-memory and on file.  Does not update the master catalog or
 // zapmap.
 func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) {
-	lfile.Open()
+	lfile.Open(CREATE | WRITE_ONLY | APPEND)
 	defer lfile.Close()
 	pos, _ := lfile.JumpFromEnd(0)
 	var nwrite int
@@ -341,7 +395,7 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
 	lfile.indexfile.list = append(lfile.indexfile.list, irec)
 
 	// Write the index record to the index file
-	lfile.indexfile.Open()
+	lfile.indexfile.Open(CREATE | WRITE_ONLY | APPEND)
 	defer lfile.indexfile.Close()
 	pos, _ = lfile.indexfile.JumpFromEnd(0)
 	nwrite, err = lfile.indexfile.LockedWriteAt(irec.Pack(), pos)
@@ -351,7 +405,7 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
 
 // Read a value from the log file.
 func (lfile *Logfile) ReadVal(vpos, vsz LBUINT) ([]byte, error) {
-	lfile.Open()
+	lfile.Open(READ_ONLY)
 	defer lfile.Close()
 	return lfile.LockedReadAt(vpos, vsz, "value")
 }
@@ -359,35 +413,32 @@ func (lfile *Logfile) ReadVal(vpos, vsz LBUINT) ([]byte, error) {
 // Zap stale values from the logfile, by copying the file to a tmp file while
 // ignoring stale records as defined by the given Zapmap.
 func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
-	lfile.debug.Fine(DEBUG_DEFAULT, "Zapping %s", lfile.abspath)
+	lfile.debug.Fine("Zapping %s", lfile.abspath)
 	// Extract all zaprecords for this file and build a map between the logfile
 	// record positions -> record size.
 	rpos, rsz, err := zmap.Find(lfile.fnum)
 	if err != nil {return err}
 	if len(rpos) == 0 {
-		lfile.debug.Fine(DEBUG_DEFAULT, " Nothing to zap")
+		lfile.debug.Fine(" Nothing to zap")
 		return nil
 	}
-	lfile.debug.SuperFine(DEBUG_DEFAULT, " zaplists: rpos = %v rsz = %v", rpos, rsz)
+	lfile.debug.SuperFine(" zaplists: rpos = %v rsz = %v", rpos, rsz)
 
 	// Create temporary file.
-	tmppath := path.Join(
-			filepath.Dir(lfile.abspath),
-			TMPFILE_PREFIX + filepath.Base(lfile.abspath))
-	tmp, err := OpenFile(tmppath)
-	if err != nil {return err}
+	err = lfile.tmp.Open(CREATE | WRITE_ONLY | APPEND)
+	if lfile.debug.Error(err) != nil {return err}
 
-	lfile.Open()
+	lfile.Open(READ_ONLY)
 	last := len(rpos) - 1
 	pos := int(rpos[last] + rsz[last])
 	if pos > lfile.size {
 		return FmtErrPositionExceedsFileSize(lfile.abspath, pos, lfile.size)
 	}
-	lfile.debug.SuperFine(DEBUG_DEFAULT, " file size = %d", lfile.size)
+	lfile.debug.SuperFine(" file size = %d", lfile.size)
 
 	// Invert the zap lists to make position and size of chunks to preserve
 	cpos, csz := InvertSequence(rpos, rsz, lfile.size)
-	lfile.debug.SuperFine(DEBUG_DEFAULT, " preserve: cpos = %v csz = %v", cpos, csz)
+	lfile.debug.SuperFine(" preserve: cpos = %v csz = %v", cpos, csz)
 
 	// Transpose logfile (with gaps) to tmp file
 	var bfr []byte // normal buffer
@@ -408,7 +459,6 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 		kr = cpos[i]
 		n, rem = DivideChunkByBuffer(csz[i], bfrsz)
 		lfile.debug.SuperFine(
-			DEBUG_DEFAULT,
 			" dividing chunk %d by %d yields n = %d rem = %d",
 			csz[i], bfrsz, n, rem)
 		hasRem = (rem > 0)
@@ -424,7 +474,6 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 			nr, err = lfile.gofile.ReadAt(bfr, int64(kr))
 			bfr = bfr[0:nr]
 			lfile.debug.SuperFine(
-				DEBUG_DEFAULT,
 				" read = %s err = %v",
 				FmtHexString(bfr), err)
 			if err != nil && err != io.EOF {
@@ -435,15 +484,14 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 			kr = kr + size
 
 			// Write
-			_, err = tmp.Write(bfr) // Only use part of slice if near EOF
+			_, err = lfile.tmp.gofile.Write(bfr) // Only use part of slice if near EOF
 			lfile.debug.SuperFine(
-				DEBUG_DEFAULT,
 				" wrote = %s err = %v",
 				FmtHexString(bfr), err)
 			if err != nil {
 				return WrapError(fmt.Sprintf(
 					"Attempted to write %d bytes at position %d in file %q",
-					size, kw, tmppath), err)
+					size, kw, lfile.tmp.abspath), err)
 			}
 			kw = kw + size
 		}
@@ -451,16 +499,15 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 
 	lfile.RUnlock()
 	lfile.Close()
-	tmp.Close()
+	lfile.tmp.Close()
 
 	if kw > 0 {
-		lfile.Lock()
-		if err = lfile.Remove(); err != nil {return err}
-		if err = os.Rename(tmppath, lfile.abspath); err != nil {return err}
-		lfile.Unlock()
+	    err = lfile.ReplaceWithTmpTwin()
+		if lfile.debug.Error(err) != nil {return err}
 		zmap.Purge(lfile.fnum, lfile.debug)
 	} else {
-		if err = os.Remove(tmppath); err != nil {return err}
+		err = lfile.tmp.Remove()
+		if lfile.debug.Error(err) != nil {return err}
 	}
 
 	return nil
@@ -483,7 +530,7 @@ func (ifile *Indexfile) Load() (lfindex *Index, err error) {
 // Write index file.
 // TODO would it be faster to build a []byte and write once?
 func (ifile *Indexfile) Save(lfindex *Index) (err error) {
-	ifile.Open()
+	ifile.Open(CREATE | WRITE_ONLY | APPEND)
 	defer ifile.Close()
 	irsz := int(ParamSize(NewIndexRecord()))
 	bytes := make([]byte, len(lfindex.list) * irsz)
@@ -501,56 +548,106 @@ func (ifile *Indexfile) Save(lfindex *Index) (err error) {
 // Zapmap file methods.
 
 // Read zap file into a zapmap.
-func (zmap *Zapmap) Load() (err error) {
-	zmap.file.Open()
+func (zmap *Zapmap) Load(debug *DebugLogger) (err error) {
+	zmap.file.Open(READ_ONLY)
 	defer zmap.file.Close()
+	if zmap.file.size == 0 {return}
+	zmap.Lock()
 	f := func(rec *GenericRecord) error {
-		keystr, zrecs := rec.ToZapRecordList()
-		zmap.zapmap[keystr] = zrecs
+		key, zrecs := rec.ToZapRecordList(debug)
+		zmap.zapmap[key] = zrecs // Don't need to use gateway because zmap is fresh
 		return nil
 	}
 	err = zmap.file.Process(f, ZAP_RECORD, true)
+	zmap.Unlock()
 	return
 }
 
 // Write zapmap file.
-func (zmap *Zapmap) Save() (err error) {
-	zmap.file.Open()
-	defer zmap.file.Close()
-	var nwrite int
+func (zmap *Zapmap) Save(debug *DebugLogger) (err error) {
+	zmap.file.tmp.Open(CREATE | WRITE_ONLY)
+	var nw int
 	var pos LBUINT = 0
-	for keystr, zrecs := range zmap.zapmap {
-		nwrite, err = zmap.file.LockedWriteAt(PackZapRecord(keystr, zrecs), pos)
+	zmap.RLock()
+	for key, zrecs := range zmap.zapmap {
+		nw, err = zmap.file.tmp.LockedWriteAt(PackZapRecord(key, zrecs, debug), pos)
 		if err != nil {return}
-		pos = pos.plus(nwrite)
+		pos = pos.Plus(nw)
 	}
+	zmap.file.tmp.Close()
+	err = zmap.file.ReplaceWithTmpTwin()
+	zmap.RUnlock()
 	return
 }
 
 // Master index file methods.
 
 // Read master catalog file into a new master catalog.
-func (mcat *MasterCatalog) Load() (err error) {
-	mcat.file.Open()
+func (mcat *MasterCatalog) Load(debug *DebugLogger) (err error) {
+	mcat.file.Open(READ_ONLY)
 	defer mcat.file.Close()
+	if mcat.file.size == 0 {return}
+	mcat.Lock()
 	f := func(rec *GenericRecord) error {
-		mcr := rec.ToMasterCatalogRecord()
-		mcat.index[string(rec.key)] = mcr
+		key, mcr := rec.ToMasterCatalogRecord(debug)
+		mcat.index[key] = mcr // Don't need to use gateway because mcat is fresh
 		return nil
 	}
 	err = mcat.file.Process(f, MASTER_RECORD, false)
+	mcat.Unlock()
 	return
 }
 
 // Write master catalog file.
-func (mcat *MasterCatalog) Save() (err error) {
-	mcat.file.Open()
-	defer mcat.file.Close()
+func (mcat *MasterCatalog) Save(debug *DebugLogger) (err error) {
+	mcat.file.tmp.Open(CREATE | WRITE_ONLY)
+	var nw int
 	var pos LBUINT = 0
-	for keystr, mcr := range mcat.index {
-		_, err = mcat.file.LockedWriteAt(PackMasterRecord(keystr, mcr), pos)
+	mcat.RLock()
+	for key, mcr := range mcat.index {
+		nw, err = mcat.file.tmp.LockedWriteAt(PackMasterRecord(key, mcr, debug), pos)
 		if err != nil {return}
+		pos = pos.Plus(nw)
 	}
+	mcat.file.tmp.Close()
+	err = mcat.file.ReplaceWithTmpTwin()
+	mcat.RUnlock()
+	return
+}
+
+// User Permission index file methods.
+
+// Read user permission file into a new user permission index.
+func (up *UserPermissions) Load(debug *DebugLogger) (err error) {
+	up.file.Open(READ_ONLY)
+	defer up.file.Close()
+	if up.file.size == 0 {return}
+	up.Lock()
+	f := func(rec *GenericRecord) error {
+		key, upr := rec.ToUserPermissionRecord(debug)
+		up.index[key] = upr // Don't need to use gateway because up is fresh
+		return nil
+	}
+	err = up.file.Process(f, PERMISSION_RECORD, false)
+	up.Unlock()
+	return
+}
+
+// Write user permission file.
+func (up *UserPermissions) Save(debug *DebugLogger) (err error) {
+	up.file.tmp.Open(CREATE | WRITE_ONLY)
+	var nw int
+	var pos LBUINT = 0
+	up.RLock()
+	for key, upr := range up.index {
+		nw, err = up.file.tmp.LockedWriteAt(
+					PackUserPermissionRecord(key, upr, debug), pos)
+		if err != nil {return}
+		pos = pos.Plus(nw)
+	}
+	up.file.tmp.Close()
+	err = up.file.ReplaceWithTmpTwin()
+	up.RUnlock()
 	return
 }
 

@@ -4,16 +4,18 @@ import (
 	"testing"
 	//"fmt"
 	"os"
+	"path/filepath"
 )
 
 const (
-	lbtest = "test"
+	lbname = "test"
 	logfile_maxbytes = 100
-	debug_level = "FINE"
+	debug_level = "BASIC"
 	user = "admin"
 	passhash = "root"
 )
 
+var lbtest string
 var lbase *Logbase = setupLogbase()
 var k, v []string
 var pair int = 0
@@ -38,12 +40,12 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 	pair++
 	saveRetrieveKeyValue(k[pair], v[pair], t)
 	mcr := make([]*MasterCatalogRecord, 3)
-	mcr[0] = lbase.mcat.index[k[pair]]
+	mcr[0] = lbase.mcat.Get(k[pair])
 	saveRetrieveKeyValue(k[pair], v[pair], t)
-	mcr[1] = lbase.mcat.index[k[pair]]
+	mcr[1] = lbase.mcat.Get(k[pair])
 	saveRetrieveKeyValue(k[pair+1], v[pair+1], t) // mix up a bit
 	saveRetrieveKeyValue(k[pair], v[pair], t)
-	mcr[2] = lbase.mcat.index[k[pair]]
+	mcr[2] = lbase.mcat.Get(k[pair])
 	//dumpIndex(lbase.livelog.indexfile)
 	dumpMaster()
 	dumpZapmap()
@@ -51,14 +53,14 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Problem saving logbase: %s", err)
 	}
-	zrecs := lbase.zmap.zapmap[k[pair]]
+	zrecs := lbase.zmap.Get(k[pair])
 	if len(zrecs) != 2 {
 		t.Fatalf("The zapmap should contain precisely 2 entries")
 	}
 	zrec0 := NewZapRecord()
-	zrec0.FromMasterCatalogRecord(k[pair], mcr[0])
+	zrec0.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + KVTYPE_SIZE), mcr[0])
 	zrec1 := NewZapRecord()
-	zrec1.FromMasterCatalogRecord(k[pair], mcr[1])
+	zrec1.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + KVTYPE_SIZE), mcr[1])
 	matches := zrec0.Equals(zrecs[0]) && zrec1.Equals(zrecs[1])
 	if !matches {
 		t.Fatalf("The zapmap should contain {%s%s} but is instead {%s%s}",
@@ -93,25 +95,28 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 			len(lbase.zmap.zapmap))
 	}
 	for key, mcr := range mc.index {
-		if !mcr.Equals(lbase.mcat.index[key]) {
+		lbase.debug.Check("key = %v", key)
+		lbase.debug.Check("mcr = %v", mcr)
+		lbase.debug.Check("lbase.mcat.index[key] = %v", lbase.mcat.Get(key))
+		if !mcr.Equals(lbase.mcat.Get(key)) {
 		    t.Fatalf(
 				"The saved and loaded master file entry for key %q should " +
 				"be %s but is %s",
 				key,
 				mcr,
-				lbase.mcat.index[key])
+				lbase.mcat.Get(key))
 		}
 	}
 	for key, zrecs := range zm.zapmap {
 		for i, zrec := range zrecs {
-			if !zrec.Equals(lbase.zmap.zapmap[key][i]) {
+			if !zrec.Equals(lbase.zmap.Get(key)[i]) {
 		        t.Fatalf(
 					"The saved and loaded zap file list for key %q should " +
 					"be %s at position %d but is %s",
 					key,
 					zrec,
 					i,
-					lbase.zmap.zapmap[key][i])
+					lbase.zmap.Get(key)[i])
 			}
 	    }
 	}
@@ -144,25 +149,25 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
 			len(lbase.zmap.zapmap))
 	}
 	for key, mcr := range mc.index {
-		if !mcr.Equals(lbase.mcat.index[key]) {
+		if !mcr.Equals(lbase.mcat.Get(key)) {
 		    t.Fatalf(
 				"The saved and loaded master file entry for key %q should " +
 				"be %s but is %s",
 				key,
 				mcr,
-				lbase.mcat.index[key])
+				lbase.mcat.Get(key))
 		}
 	}
 	for key, zrecs := range zm.zapmap {
 		for i, zrec := range zrecs {
-			if !zrec.Equals(lbase.zmap.zapmap[key][i]) {
+			if !zrec.Equals(lbase.zmap.Get(key)[i]) {
 		        t.Fatalf(
 					"The saved and loaded zap file list for key %q should " +
 					"be %s at position %d but is %s",
 					key,
 					zrec,
 					i,
-					lbase.zmap.zapmap[key][i])
+					lbase.zmap.Get(key)[i])
 			}
 	    }
 	}
@@ -254,6 +259,8 @@ func TestZap(t *testing.T) {
 
 // Set up the global test logbase.
 func setupLogbase() (lb *Logbase) {
+	cwd, _ := os.Getwd()
+	lbtest = filepath.Join(cwd, lbname)
 	err := os.RemoveAll(lbtest)
 	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
 	lb = MakeLogbase(lbtest, ScreenLogger().SetLevel(debug_level))
@@ -268,9 +275,9 @@ func setupLogbase() (lb *Logbase) {
 // Dump the file register.
 func dumpFileReg() {
 	files := lbase.freg.StringArray()
-	lbase.debug.Fine(DEBUG_DEFAULT, "Dumping file register:")
+	lbase.debug.Fine("Dumping file register:")
 	for _, file := range files {
-		lbase.debug.Fine(DEBUG_DEFAULT, " " + file)
+		lbase.debug.Fine(" " + file)
 	}
 	return
 }
@@ -281,29 +288,29 @@ func dumpIndex(ifile *Indexfile) {
 	if err != nil {
 		WrapError("Could not load live log index file", err).Fatal()
 	}
-	lbase.debug.Fine(DEBUG_DEFAULT, "Index file records for %s:", ifile.abspath)
+	lbase.debug.Fine("Index file records for %s:", ifile.abspath)
 	for _, irec := range lfindex.list {
-		lbase.debug.Fine(DEBUG_DEFAULT, irec.String())
+		lbase.debug.Fine(irec.String())
 	}
 }
 
 // Dump contents of the (internal) master catalog.
 func dumpMaster() {
-	lbase.debug.Fine(DEBUG_DEFAULT, "Master catalog records:")
+	lbase.debug.Fine("Master catalog records:")
 	for key, mcr := range lbase.mcat.index {
-		lbase.debug.Fine(DEBUG_DEFAULT, "%q %s", key, mcr.String())
+		lbase.debug.Fine("%q %s", key, mcr.String())
 	}
 }
 
 // Dump contents of the internal zapmap.
 func dumpZapmap() {
-	lbase.debug.Fine(DEBUG_DEFAULT, "Zapmap records:")
+	lbase.debug.Fine("Zapmap records:")
 	for key, zrecs := range lbase.zmap.zapmap {
 		var line string = ""
 		for _, zrec := range zrecs {
 			line += zrec.String()
 		}
-		lbase.debug.Fine(DEBUG_DEFAULT, "%q {%s}", key, line)
+		lbase.debug.Fine("%q {%s}", key, line)
 	}
 }
 
@@ -313,13 +320,13 @@ func dumpLogfiles() {
 	for _, fnum := range fnums {
 		lfile, err := lbase.GetLogfile(fnum)
 		if err != nil {WrapError("Could not get logfile", err).Fatal()}
-		lbase.debug.Fine(DEBUG_DEFAULT, "Logfile records for %s:", lfile.abspath)
+		lbase.debug.Fine("Logfile records for %s:", lfile.abspath)
 		lrecs, err2 := lfile.Load()
 		if err2 != nil {WrapError("Could not get logfile", err2).Fatal()}
 		for _, lrec := range lrecs {
-			lbase.debug.Fine(DEBUG_DEFAULT, " %s", lrec.String())
+			lbase.debug.Fine(" %s", lrec.String())
 		}
-		//lbase.debug.Fine(DEBUG_DEFAULT, "Hex dump for %s:", lfile.abspath)
+		//lbase.debug.Fine("Hex dump for %s:", lfile.abspath)
 		//lfile.HexDump(0, 0)
 	}
 	return
@@ -330,14 +337,14 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 	key := keystr
 	val := []byte(valstr)
 
-	lbase.Put(key, VALTYPE_STRING, val)
-	if lbase.err != nil {
-		t.Fatalf("Could not put key value pair into test logbase: %s", lbase.err)
+	err := lbase.Put(key, val, KVTYPE_STRING)
+	if err != nil {
+		t.Fatalf("Could not put key value pair into test logbase: %s", err)
 	}
 
-	got, valtype, errget := lbase.Get(key)
-	if errget != nil {
-		t.Fatalf("Could not get key value pair from test logbase: %s", errget)
+	got, vtype, err := lbase.Get(key)
+	if err != nil {
+		t.Fatalf("Could not get key value pair from test logbase: %s", err)
 	}
 
 	gotstr := string(got)
@@ -347,10 +354,10 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 			gotstr, vstr)
 	}
 
-	if valtype != VALTYPE_STRING {
+	if vtype != KVTYPE_STRING {
 		t.Fatalf(
 			"The retrieved value type %d differed from the expected value type %d",
-			valtype, VALTYPE_STRING)
+			vtype, KVTYPE_STRING)
 	}
 
 	return lbase
@@ -363,11 +370,11 @@ func generateRandomKeyValuePairs(n, min, max uint64) (keys, values []string) {
 }
 
 func dumpKeyValuePairs(keys, values []string) {
-	lbase.debug.Advise(DEBUG_DEFAULT, "Dumping key value pairs:")
+	lbase.debug.Advise("Dumping key value pairs:")
 	comlen := len(keys)
 	if len(values) < len(keys) {comlen = len(values)}
 	for i := 0; i < comlen; i++ {
-		lbase.debug.Advise(DEBUG_DEFAULT, " (%s,%s)", keys[i], values[i])
+		lbase.debug.Advise(" (%s,%s)", keys[i], values[i])
 	}
 	return
 }

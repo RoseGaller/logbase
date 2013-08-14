@@ -10,70 +10,153 @@ import (
 	"encoding/hex"
 	"encoding/binary"
 	"os"
+	"path/filepath"
 )
 
-type Permissions struct {
+const (
+	PERMISSION_CREATE uint8 = 1
+	PERMISSION_READ   uint8 = 2
+	PERMISSION_UPDATE uint8 = 4
+	PERMISSION_DELETE uint8 = 8
+)
+
+type Permission struct {
 	Create	bool
 	Read	bool
 	Update	bool
 	Delete	bool
-	Active	bool // Admin can deactivate
-	Admin	bool
 }
 
-func NewAdmin() *Permissions {
-	return &Permissions{
+func NewAdmin() *Permission {
+	return &Permission{
 		Create: true,
 		Read:	true,
 		Update: true,
 		Delete: true,
-		Active: true,
-		Admin:	true,
 	}
 }
 
-func NewReader() *Permissions {
-	return &Permissions{
+func NewReader() *Permission {
+	return &Permission{
 		Create: false,
 		Read:	true,
 		Update: false,
 		Delete: false,
-		Active: true,
-		Admin:	false,
 	}
 }
 
-func NewWriter() *Permissions {
-	return &Permissions{
+func NewWriter() *Permission {
+	return &Permission{
 		Create: false,
 		Read:	true,
 		Update: false,
 		Delete: false,
-		Active: true,
-		Admin:	false,
 	}
 }
 
-func (lbase *Logbase) AddUser(user, passhash string) {
-	lbase.Put(UserPassKey(user), VALTYPE_STRING, []byte(passhash))
-	lbase.Put(
-		UserPermissionsKey(user), VALTYPE_GOB, Gobify(NewAdmin(), lbase.debug))
+func (p *Permission) String() string {
+	return fmt.Sprintf(
+		"(C:%d R:%d U:%d D:%d)",
+		BoolToUint8(p.Create),
+		BoolToUint8(p.Read),
+		BoolToUint8(p.Update),
+		BoolToUint8(p.Delete))
+}
+
+// Initialise security by loading all user permissions if the given user
+// is authorised.
+func (lbase *Logbase) InitSecurity(user, passhash string) (err error) {
+	lbase.debug.Advise("Initialising security")
+	// Make dir if it does not exist
+	permpath := lbase.UserPermissionDirPath()
+	isnew := !Exists(permpath)
+	if err = lbase.debug.Error(os.MkdirAll(permpath, 0777)); err != nil {return}
+
+	if lbase.IsUser(user) {
+        if !lbase.IsValidUser(user, passhash) {
+			return lbase.debug.Error(FmtErrUser("%q is not a valid user"))
+		}
+		// Load permission indexes
+		usernames, err := lbase.GetUserPermissionPaths()
+		if lbase.debug.Error(err) != nil {return err}
+		for _, name := range usernames {
+			if lbase.IsUser(name) {
+				up := NewUserPermissions(NewReader())
+				ufile, err := lbase.GetUserPermissionFile(name)
+				lbase.debug.Error(err)
+				up.file = NewUserPermissionFile(ufile)
+				if up.file.size > 0 {
+					err = lbase.debug.Error(up.Load(lbase.debug))
+					if err != nil {return err}
+					lbase.users.perm[name] = up
+				}
+			} else {
+				lbase.debug.Error(FmtErrUser(
+					"User %q has a permission index file but is not in the logbase, " +
+					"add them in order to permit authentication",
+					name))
+			}
+		}
+	} else {
+		// Add user to main logbase
+		if isnew {
+			p := NewAdmin()
+			lbase.AddUser(user, passhash, p)
+			lbase.Save()
+		}
+	}
+
     return
 }
 
-func (lbase *Logbase) IsValidUser(user, passhash string) error {
-	val, _, err := lbase.Get(UserPassKey(user))
-	lbase.debug.Error(err)
-	if val == nil {return FmtErrUser("User %q does not exist", user)}
-	if string(val) == passhash {return nil}
-    return FmtErrUser("Password for user %q is not valid", user)
+func (lbase *Logbase) UserPermissionDirPath() string {
+	return filepath.Join(lbase.abspath, lbase.permdir)
 }
 
-func (lbase *Logbase) IsUser(user string) error {
-	val, _, err := lbase.Get(UserPassKey(user))
+func (lbase *Logbase) UserPermissionRelPath(user string) string {
+	return filepath.Join(lbase.permdir, user)
+}
+
+func (lbase *Logbase) GetUserPermissionFile(user string) (ufile *File, err error) {
+	return lbase.GetFile(lbase.UserPermissionRelPath(user))
+}
+
+func (lbase *Logbase) AddUserPass(user, passhash string) error {
+	// Add user name and passhash to logbase	
+	return lbase.Put(UserPassKey(user), []byte(passhash), KVTYPE_STRING)
+}
+
+func (lbase *Logbase) AddUserPermissions(user string, defperm *Permission) (err error) {
+	// Add user permission file
+	ufile, err := lbase.GetUserPermissionFile(user)
 	lbase.debug.Error(err)
-	if val == nil {return FmtErrUser("User %q does not exist", user)}
-    return nil
+	up := NewUserPermissions(defperm)
+	up.file = NewUserPermissionFile(ufile)
+	lbase.users.perm[user] = up
+	//if up.file.size > 0 {
+	//	err = up.Load(lbase.debug)
+	//}
+    return
+}
+
+func (lbase *Logbase) AddUser(user, passhash string, defperm *Permission) (err error) {
+	err = lbase.debug.Error(lbase.AddUserPass(user, passhash))
+	if err != nil {return err}
+	err = lbase.debug.Error(lbase.AddUserPermissions(user, defperm))
+	return err
+}
+
+func (lbase *Logbase) IsValidUser(user, passhash string) bool {
+	val, _, _ := lbase.Get(UserPassKey(user))
+	if val == nil {return false}
+	if string(val) == passhash {return true}
+    return false
+}
+
+func (lbase *Logbase) IsUser(user string) bool {
+	val, _, _ := lbase.Get(UserPassKey(user))
+	if val == nil {return false}
+    return true
 }
 
 func UserKey(user string) string {
@@ -82,10 +165,6 @@ func UserKey(user string) string {
 
 func UserPassKey(user string) string {
 	return UserKey(user) + ".pass"
-}
-
-func UserPermissionsKey(user string) string {
-	return UserKey(user) + ".permissions"
 }
 
 // Hiding user text input requires a linux system using gopass.

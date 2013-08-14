@@ -97,36 +97,31 @@ import (
 	"path/filepath"
 )
 
-type LBUINT uint32 // Unsigned Logbase integer type used on file
-type VALTYPE uint16 // Value type identifier
-
 const (
 	APPNAME         string = "Logbase"
 	CONFIG_FILENAME string = "logbase.cfg"
 	MASTER_FILENAME string = ".master"
 	ZAPMAP_FILENAME string = ".zapmap"
-	LBUINT_SIZE     LBUINT = 4 // bytes 
+	PERMISSIONS_DIR_NAME string = "users"
 	LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
 	LBUINT_SIZE_x3  LBUINT = 3 * LBUINT_SIZE
 	LBUINT_SIZE_x4  LBUINT = 4 * LBUINT_SIZE
-	LBUINT_MAX      int64 = 4294967295
-	VALTYPE_SIZE	int = 2
-	CRC_SIZE        LBUINT = LBUINT_SIZE
 )
 
 // Logbase database instance.
 type Logbase struct {
 	name        string // Logbase name
 	abspath     string // Logbase directory path
+	permdir		string // Logbase user permissions sub-dir
 	livelog     *Logfile // The current (live) log file
 	freg        *FileRegister
 	mcat        *MasterCatalog
 	zmap        *Zapmap
 	config      *LogbaseConfiguration
 	debug       *DebugLogger
-	err         error // permits a more "fluent" api
 	masterfile  *Masterfile
 	zapfile     *Zapfile
+	users		*Users
 }
 
 // Make a new Logbase instance based on the given directory path.
@@ -134,6 +129,7 @@ func MakeLogbase(abspath string, debug *DebugLogger) *Logbase {
 	lbase := NewLogbase()
 	lbase.name = filepath.Base(abspath)
 	lbase.abspath = abspath
+	lbase.permdir = PERMISSIONS_DIR_NAME
 	lbase.debug = debug
 	return lbase
 }
@@ -144,6 +140,7 @@ func NewLogbase() *Logbase {
 	    freg:   NewFileRegister(),
 	    mcat:   NewMasterCatalog(),
 	    zmap:   NewZapmap(),
+		users:	NewUsers(),
 	}
 }
 
@@ -189,7 +186,7 @@ func (lbase *Logbase) HasLiveLog() bool {
 // Execute an orderly shutdown including finalisation of index and
 // zap files.
 func (lbase *Logbase) Close() error {
-	lbase.debug.Advise(DEBUG_DEFAULT, "Closing logbase %q...", lbase.name)
+	lbase.debug.Advise("Closing logbase %q...", lbase.name)
 	return lbase.Save()
 }
 
@@ -199,7 +196,7 @@ func (lbase *Logbase) Close() error {
 // append the old master catalog record into a "zapmap" which schedules stale
 // data for deletion.
 func (lbase *Logbase) Init(user, passhash string) error {
-	lbase.debug.Fine(DMC0, "Commence init of logbase %q", lbase.name)
+	lbase.debug.Basic("Commence init of logbase %q", lbase.name)
 	// Make dir if it does not exist
 	err := lbase.debug.Error(os.MkdirAll(lbase.abspath, 0777))
 	if err != nil {return err}
@@ -224,33 +221,32 @@ func (lbase *Logbase) Init(user, passhash string) error {
 
 	var buildmasterzap bool = true
 	if lbase.mcat.file.size > 0 {
-		if lbase.debug.Error(lbase.mcat.Load()) == nil {
-			lbase.debug.Advise(DMC0, "Loaded master file")
+		if lbase.debug.Error(lbase.mcat.Load(lbase.debug)) == nil {
+			lbase.debug.Advise("Loaded master file")
 			if lbase.zmap.file.size > 0 {
-				if lbase.debug.Error(lbase.zmap.Load()) == nil {
-					lbase.debug.Advise(DMC0, "Loaded zap file")
+				if lbase.debug.Error(lbase.zmap.Load(lbase.debug)) == nil {
+					lbase.debug.Advise("Loaded zap file")
 					buildmasterzap = false
 				}
 			}
 		}
 	}
 
-	var isnew bool = false
 	if buildmasterzap {
 		lbase.debug.Advise(
-			DMC0,
 			"Could not find or load master and zapmap files, " +
 			"build from index files...")
 		// Get logfile list
 		fpaths, fnums, err2 := lbase.GetLogfilePaths()
 		if lbase.debug.Error(err2) != nil {return err2}
-		if len(fnums) == 0 {isnew = true}
-		lbase.debug.Fine(DMC0, "fpaths = %v", fpaths)
+		if len(fnums) == 0 {
+			lbase.debug.Advise("This appears to be a new logbase")
+		}
 
 		// Iterate through all log files
 		var refresh bool
 		for i, fnum := range fnums {
-			lbase.debug.Fine(DMC0, "Scan log file %d index", fnum)
+			lbase.debug.Fine("Scan log file %d index", fnum)
 			refresh = false
 			ipath := path.Join(lbase.abspath, lbase.MakeIndexfileRelPath(fnum))
 			istat, err := os.Stat(ipath)
@@ -264,10 +260,10 @@ func (lbase *Logbase) Init(user, passhash string) error {
 			var lfindex *Index
 			if fstat.Size() > 0 {
 				if refresh {
-					lbase.debug.Advise(DMC0, "Refreshing index file %s", ipath)
+					lbase.debug.Basic("Refreshing index file %s", ipath)
 					lfindex, err = lbase.RefreshIndexfile(fnum)
 				} else {
-					lbase.debug.Advise(DMC0, "Reading index file %s", ipath)
+					lbase.debug.Basic("Reading index file %s", ipath)
 					lfindex, err = lbase.ReadIndexfile(fnum)
 				}
 			}
@@ -282,40 +278,27 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	if err = lbase.debug.Error(lbase.SetLiveLog()); err != nil {return err}
 
 	// User
-	if isnew {
-		lbase.AddUser(user, passhash)
-		lbase.Save()
-	} else {
-        if err = lbase.IsValidUser(user, passhash); err != nil {return err}
-	}
+	err = lbase.InitSecurity(user, passhash)
+	if err != nil {return err}
 
-	lbase.debug.Fine(DMC0, "Completed init of logbase %q", lbase.name)
+	lbase.debug.Advise("Completed init of logbase %q", lbase.name)
 	return nil
 }
 
 // Save the key-value pair in the live log.  Handles the value type
 // prepend into the value bytes.
-func (lbase *Logbase) Put(keystr string, valtype VALTYPE, val []byte) error {
-	val = InjectValueType(valtype, val)
-
-	lbase.debug.Fine(DEBUG_DEFAULT,
-		"Putting (%q,[%d]byte) into logbase %s",
-		keystr, len(val), lbase.name)
+func (lbase *Logbase) Put(key interface{}, val []byte, vtype KVTYPE) error {
+	lbase.debug.SuperFine(
+		"Putting (%v,[%d]byte) into logbase %s",
+		key, len(val), lbase.name)
 
 	if lbase.HasLiveLog() {
-		aftersize :=
-			lbase.livelog.size +
-			int(LBUINT_SIZE_x3) +
-			len([]byte(keystr)) +
-			len(val) +
-			4 // crc
-
-		//lbase.debug.Fine(DEBUG_DEFAULT, "CHECK aftersize = %v", aftersize)
+		lrec := MakeLogRecord(key, val, vtype, lbase.debug)
+		aftersize := lbase.livelog.size + len(lrec.Pack())
 		if aftersize > lbase.config.LOGFILE_MAXBYTES {
 			lbase.NewLiveLog()
 		}
 
-		lrec := MakeLogRecord(keystr, val)
 	    irec, err := lbase.livelog.StoreData(lrec)
 		if err != nil {return err}
 		lbase.Update(irec, lbase.livelog.fnum)
@@ -326,15 +309,15 @@ func (lbase *Logbase) Put(keystr string, valtype VALTYPE, val []byte) error {
 
 // Retrieve the value for the given key.  Snips off the value type
 // prepend from the value bytes.
-func (lbase *Logbase) Get(keystr string) (val []byte, valtype VALTYPE, err error) {
-	mcr := lbase.mcat.index[keystr]
+func (lbase *Logbase) Get(key interface{}) (val []byte, vtype KVTYPE, err error) {
+	mcr := lbase.mcat.Get(key)
 	if mcr == nil {
-		err = FmtErrKeyNotFound(keystr)
+		err = FmtErrKeyNotFound(key)
 		val = nil
-		valtype = VALTYPE_BYTES
+		vtype = KVTYPE_NIL
 	} else {
 		val, err = mcr.ReadVal(lbase)
-        val, valtype = SnipValueType(val)
+		val, vtype = SnipValueType(val)
 	}
 
 	return

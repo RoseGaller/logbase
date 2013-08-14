@@ -19,7 +19,16 @@ import (
 
 const (
 	DEFAULT_FILEMODE	os.FileMode = 0666 // octal with leading zero
-	LOCKFILE_FORMAT		string = "lock.%s.%s" // type, filename
+	TMPFILE_PREFIX      string = ".tmp."
+)
+
+// 
+const (
+	APPEND				int = os.O_APPEND
+	READ_ONLY			int = os.O_RDONLY
+	WRITE_ONLY			int = os.O_WRONLY
+	READ_WRITE			int = os.O_RDWR
+	CREATE				int = os.O_CREATE
 )
 
 const (
@@ -38,6 +47,7 @@ type File struct {
 	debug   *DebugLogger
 	isOpen  bool // its ok to have multiple opens of same gofile
 	size    int // size in bytes
+	tmp		*File // temporary "twin" file
 }
 
 func NewFile() *File {
@@ -55,37 +65,51 @@ func NewFileRegister() *FileRegister {
 	return &FileRegister{files: make(map[string]*File)}
 }
 
+// Test whether the given file or directory exists.
+func Exists(abspath string) bool {
+	_, err := os.Stat(abspath)
+	if !os.IsNotExist(err) {return true}
+	return false
+}
+
 // Open a new or existing File for read/write access.
+// Use this as the gateway for file creation/retrieval
+// where possible to take advantage of the file register
+// and ensure proper initialisation.
 func (lbase *Logbase) GetFile(relpath string) (file *File, err error) {
 	fpath := path.Join(lbase.abspath, relpath)
 	// Use existing File if present
 	file, present := lbase.freg.files[fpath]
 	if present {return}
 
-	file = NewFile()
-	file.id = fileCounter
-	fileCounter++
-	file.abspath = fpath
-	file.debug = lbase.debug
-	lbase.freg.files[fpath] = file
+	// Create file and its tmp twin
+	file = lbase.MakeFile(fpath)
+	// The tmp twin
+	file.tmp = lbase.MakeFile(file.TmpTwinPath())
 
 	err = file.Touch()
 	return
 }
 
-func OpenFile(abspath string) (*os.File, error) {
-	return os.OpenFile(
-		abspath,
-		os.O_CREATE |
-		os.O_APPEND |
-		os.O_RDWR,
-		DEFAULT_FILEMODE)
+// Construct a new file.
+func (lbase *Logbase) MakeFile(path string) (file *File) {
+	file = NewFile()
+	file.id = fileCounter
+	fileCounter++
+	file.abspath = path
+	file.debug = lbase.debug
+	lbase.freg.files[file.abspath] = file
+	return file
+}
+
+func OpenFile(abspath string, flags int) (*os.File, error) {
+	return os.OpenFile(abspath, flags, DEFAULT_FILEMODE)
 }
 
 // A tailored file opener for full create/append/rw.
-func (file *File) Open() (err error) {
+func (file *File) Open(flags int) (err error) {
 	var gfile *os.File
-	gfile, err = OpenFile(file.abspath)
+	gfile, err = OpenFile(file.abspath, flags)
 	if err == nil {
 		file.gofile = gfile
 		file.isOpen = true
@@ -128,7 +152,7 @@ func (file *File) RelPath(lbase *Logbase) string {
 func (file *File) Touch() error {
 	info, err := os.Stat(file.abspath)
 	if os.IsNotExist(err) {
-		err2 := file.Open()
+		err2 := file.Open(CREATE)
 		if err2 == nil {
 			file.Close()
 		} else {
@@ -177,8 +201,8 @@ func (file *File) JumpFromEnd(j LBUINT) (LBUINT, error) {
 
 // Dump file bytes in hex format to the debugger.  If finish == 0,
 // go to end of file.
-func (file *File) HexDump(start, finish int) {
-	file.Open()
+func (file *File) ToHex(start, finish int) []string {
+	file.Open(READ_ONLY)
 	defer file.Close()
 	if finish == 0 || finish > file.size {finish = file.size}
 	if start < 0 {start = 0}
@@ -189,6 +213,7 @@ func (file *File) HexDump(start, finish int) {
 	}
 	const bytesPerRow int = 16
 	// Make buffers            
+	var lines []string
 	for i := start; i < finish; i = i + bytesPerRow {
 		byts, err := file.LockedReadAt(LBUINT(i), LBUINT(bytesPerRow), "hexdump")
 		if err != nil && err != io.EOF {
@@ -197,8 +222,25 @@ func (file *File) HexDump(start, finish int) {
 				file.abspath, bytesPerRow, i),
 				err).Fatal()
 		}
-		file.debug.Advise(DEBUG_DEFAULT, FmtHexString(byts))
+		lines = append(lines, FmtHexString(byts))
 	}
+	return lines
+}
+
+// Returns the path of the temporary twin.
+func (file *File) TmpTwinPath() string {
+	return path.Join(
+			filepath.Dir(file.abspath),
+			TMPFILE_PREFIX + filepath.Base(file.abspath))
+}
+
+// Replace the file with its temporary twin.
+func (file *File) ReplaceWithTmpTwin() (err error) {
+	file.Lock()
+	if err = file.Remove(); file.debug.Error(err) != nil {return}
+	err = os.Rename(file.tmp.abspath, file.abspath)
+	file.debug.Error(err)
+	file.Unlock()
 	return
 }
 
@@ -206,17 +248,15 @@ func (file *File) HexDump(start, finish int) {
 // records.
 type Processor func(rec *GenericRecord) error
 
-// Process the log file using the given function.
+// Process the file using the given function.
 func (file *File) Process(process Processor, rectype int, needDataVal bool) (err error) {
-	file.Open()
+	file.Open(READ_ONLY)
 	defer file.Close()
 	var rec *GenericRecord
 	var pos LBUINT = 0
 	for {
 		rec, pos, err = file.ReadRecord(pos, rectype, needDataVal)
-		file.debug.SuperFine(
-			DEBUG_DEFAULT,
-			"Process generic rec = %v pos = %v err = %v", rec, pos, err)
+		file.debug.Fine("Process generic rec = %v pos = %v err = %v", rec, pos, err)
 	    if err != nil {break}
 		err = process(rec)
 		if err != nil {break}
@@ -249,9 +289,10 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 	}
 
 	// Key
-	var key []byte
-	key, err = file.LockedReadAt(pos, rec.ksz, "key")
+	kbyts, err := file.LockedReadAt(pos, rec.ksz, "key")
+	key, ktype := SnipKeyType(kbyts)
 	rec.key = key
+	rec.ktype = ktype
 	if err != nil {return}
 
 	pos += rec.ksz
@@ -259,6 +300,7 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 
 	// Generic Value
 	var valsize LBUINT = 0
+	var snipval = DoSnipValueType[rectype]
 	if readvsz {
 		if readDataVal {valsize = rec.vsz} // otherwise, valsize = 0
 	} else {
@@ -267,11 +309,17 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 
 	if valsize > 0 {
 		rec.vpos = pos
-		var val []byte
-	    val, err = file.LockedReadAt(pos, valsize, "value")
+		var vbyts []byte
+	    vbyts, err = file.LockedReadAt(pos, valsize, "value")
+		if snipval {
+			val, vtype := SnipValueType(vbyts)
+			rec.val = val
+			rec.vtype = vtype
+		} else {
+			rec.val = vbyts
+		}
 	    if err != nil {return}
 
-		rec.val = val
 		pos += valsize
 		file.Goto(pos)
 	}
