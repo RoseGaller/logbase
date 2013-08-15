@@ -1,44 +1,153 @@
 /*
 	Defines constants whose specs are effectively frozen in the binary data of
-	logbases.  Changes to these values are not backard compatible.
+	logbases.  Changes to these values are not backward compatible.
 */
 package logbase
 
+import (
+	"bytes"
+	"bufio"
+	"encoding/binary"
+)
+
 type LBUINT uint32 // Unsigned Logbase integer type used on file
-type KVTYPE uint8 // Value type identifier
+type LBTYPE uint8 // Value type identifier
 
 // Keep these consistent
 const (
 	LBUINT_SIZE		LBUINT = 4 // bytes 
-	KVTYPE_SIZE		int = 1
+	LBTYPE_SIZE		int = 1
 	LBUINT_MAX      int64 = 4294967295
 	CRC_SIZE		LBUINT = 4
 )
 
 // Hard wire key/value types for all time.
 const (
-	KVTYPE_NIL			KVTYPE = 0
+	LBTYPE_NIL			LBTYPE = 0
 	// Fixed size types
-	KVTYPE_UINT8		KVTYPE = 1
-	KVTYPE_UINT16		KVTYPE = 2
-	KVTYPE_UINT32		KVTYPE = 3
-	KVTYPE_UINT64		KVTYPE = 4
+	LBTYPE_UINT8		LBTYPE = 50
+	LBTYPE_UINT16		LBTYPE = 51
+	LBTYPE_UINT32		LBTYPE = 52
+	LBTYPE_UINT64		LBTYPE = 53
 
-	KVTYPE_INT8			KVTYPE = 10
-	KVTYPE_INT16		KVTYPE = 11
-	KVTYPE_INT32		KVTYPE = 12
-	KVTYPE_INT64		KVTYPE = 13
+	LBTYPE_INT8			LBTYPE = 70
+	LBTYPE_INT16		LBTYPE = 71
+	LBTYPE_INT32		LBTYPE = 72
+	LBTYPE_INT64		LBTYPE = 74
 
-	KVTYPE_FLOAT32		KVTYPE = 20
-	KVTYPE_FLOAT64		KVTYPE = 21
+	LBTYPE_FLOAT32		LBTYPE = 90
+	LBTYPE_FLOAT64		LBTYPE = 91
 
-	KVTYPE_COMPLEX64	KVTYPE = 30
-	KVTYPE_COMPLEX128	KVTYPE = 31
+	LBTYPE_COMPLEX64	LBTYPE = 110
+	LBTYPE_COMPLEX128	LBTYPE = 111
 
 	// Only types with underlying []byte type after here
-    KVTYPE_BYTEARRAY	KVTYPE = 150 // Cannot be a key type
-	KVTYPE_STRING		KVTYPE = 151
-	KVTYPE_GOB			KVTYPE = 152
+    LBTYPE_BYTEARRAY	LBTYPE = 170 // Cannot be a key type
+	LBTYPE_STRING		LBTYPE = 171
+	LBTYPE_GOB			LBTYPE = 172
+	LBTYPE_LOCATION		LBTYPE = 173 // String of file path or URI
 
-	KVTYPE_LOCATION		KVTYPE = 160 // String of file path or URI
+	LBTYPE_MCR			LBTYPE = 190 // String key to Master Catalog Record
+	LBTYPE_DOC			LBTYPE = 191 // A DocRef including Document kind and DocMap key
 )
+
+// Keys
+
+// Keys can only be a subset of the LBTYPEs.
+func NewKey(ktype LBTYPE, debug *DebugLogger) interface{} {
+	switch ktype {
+	case LBTYPE_UINT8:
+		var p uint8
+		return interface{}(p)
+	case LBTYPE_UINT16:
+		var p uint16
+		return interface{}(p)
+	case LBTYPE_UINT32:
+		var p uint32
+		return interface{}(p)
+	case LBTYPE_UINT64:
+		var p uint64
+		return interface{}(p)
+	case LBTYPE_INT8:
+		var p int8
+		return interface{}(p)
+	case LBTYPE_INT16:
+		var p int16
+		return interface{}(p)
+	case LBTYPE_INT32:
+		var p int32
+		return interface{}(p)
+	case LBTYPE_INT64:
+		var p int64
+		return interface{}(p)
+	case LBTYPE_FLOAT32:
+		var p float32
+		return interface{}(p)
+	case LBTYPE_FLOAT64:
+		var p float64
+		return interface{}(p)
+	case LBTYPE_COMPLEX64:
+		var p complex64
+		return interface{}(p)
+	case LBTYPE_COMPLEX128:
+		var p complex128
+		return interface{}(p)
+	case LBTYPE_STRING:
+		var p string
+		return interface{}(p)
+	default:
+		debug.Error(FmtErrBadType("Bad key type: %d", ktype))
+	}
+    return nil
+}
+
+func GetKey(kbyts []byte, ktype LBTYPE, debug *DebugLogger) (key interface{}) {
+	if IsFixedSizeType(ktype) {
+		key = NewKey(ktype, debug)
+		bfr := bufio.NewReader(bytes.NewBuffer(kbyts))
+		binary.Read(bfr, BIGEND, &key)
+	} else {
+		// Must be a string
+		key = string(kbyts)
+	}
+    return
+}
+
+func IsFixedSizeType(typ LBTYPE) bool {
+    return typ < LBTYPE_BYTEARRAY
+}
+
+func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
+	switch ktype := key.(type) {
+	case uint8:
+		return LBTYPE_UINT8
+	case uint16:
+		return LBTYPE_UINT16
+	case uint32:
+		return LBTYPE_UINT32
+	case uint64:
+		return LBTYPE_UINT64
+	case int8:
+		return LBTYPE_INT8
+	case int16:
+		return LBTYPE_INT16
+	case int32:
+		return LBTYPE_INT32
+	case int64:
+		return LBTYPE_INT64
+	case float32:
+		return LBTYPE_FLOAT32
+	case float64:
+		return LBTYPE_FLOAT64
+	case complex64:
+		return LBTYPE_COMPLEX64
+	case complex128:
+		return LBTYPE_COMPLEX128
+	case string:
+		return LBTYPE_STRING
+	default:
+		debug.Error(FmtErrBadType("Unrecognised key type: %d", ktype))
+	}
+    return LBTYPE_NIL
+}
+

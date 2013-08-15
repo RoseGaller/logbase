@@ -58,9 +58,9 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 		t.Fatalf("The zapmap should contain precisely 2 entries")
 	}
 	zrec0 := NewZapRecord()
-	zrec0.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + KVTYPE_SIZE), mcr[0])
+	zrec0.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), mcr[0])
 	zrec1 := NewZapRecord()
-	zrec1.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + KVTYPE_SIZE), mcr[1])
+	zrec1.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), mcr[1])
 	matches := zrec0.Equals(zrecs[0]) && zrec1.Equals(zrecs[1])
 	if !matches {
 		t.Fatalf("The zapmap should contain {%s%s} but is instead {%s%s}",
@@ -337,7 +337,7 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 	key := keystr
 	val := []byte(valstr)
 
-	err := lbase.Put(key, val, KVTYPE_STRING)
+	_, err := lbase.Put(key, val, LBTYPE_STRING)
 	if err != nil {
 		t.Fatalf("Could not put key value pair into test logbase: %s", err)
 	}
@@ -354,10 +354,10 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 			gotstr, vstr)
 	}
 
-	if vtype != KVTYPE_STRING {
+	if vtype != LBTYPE_STRING {
 		t.Fatalf(
 			"The retrieved value type %d differed from the expected value type %d",
-			vtype, KVTYPE_STRING)
+			vtype, LBTYPE_STRING)
 	}
 
 	return lbase

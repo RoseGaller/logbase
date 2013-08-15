@@ -113,15 +113,14 @@ type Logbase struct {
 	name        string // Logbase name
 	abspath     string // Logbase directory path
 	permdir		string // Logbase user permissions sub-dir
+	config      *LogbaseConfiguration
+	debug       *DebugLogger
 	livelog     *Logfile // The current (live) log file
 	freg        *FileRegister
 	mcat        *MasterCatalog
 	zmap        *Zapmap
-	config      *LogbaseConfiguration
-	debug       *DebugLogger
-	masterfile  *Masterfile
-	zapfile     *Zapfile
 	users		*Users
+	docs		*DocumentCatalog
 }
 
 // Make a new Logbase instance based on the given directory path.
@@ -141,6 +140,7 @@ func NewLogbase() *Logbase {
 	    mcat:   NewMasterCatalog(),
 	    zmap:   NewZapmap(),
 		users:	NewUsers(),
+		docs:	NewDocumentCatalog(),
 	}
 }
 
@@ -151,7 +151,6 @@ type LogbaseConfiguration struct {
 	LOGFILE_NAME_EXTENSION  string // Postfix for binary data log file names
 	INDEXFILE_NAME_EXTENSION string // Postfix for binary "hint" file names
 	LOGFILE_MAXBYTES        int // Size of live log file before spawning a new one
-	FILE_LOCKING_ON         bool // Check presence of lock files before r/w
 }
 
 // Default configuration in case file is absent.
@@ -160,7 +159,6 @@ func DefaultConfig() *LogbaseConfiguration {
 		LOGFILE_NAME_EXTENSION:     "logbase",
 		INDEXFILE_NAME_EXTENSION:   "index",
 		LOGFILE_MAXBYTES:           1048576, // 1 MB
-		FILE_LOCKING_ON:            true,
 	}
 }
 
@@ -287,7 +285,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 
 // Save the key-value pair in the live log.  Handles the value type
 // prepend into the value bytes.
-func (lbase *Logbase) Put(key interface{}, val []byte, vtype KVTYPE) error {
+func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (*MasterCatalogRecord, error) {
 	lbase.debug.SuperFine(
 		"Putting (%v,[%d]byte) into logbase %s",
 		key, len(val), lbase.name)
@@ -300,21 +298,21 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype KVTYPE) error {
 		}
 
 	    irec, err := lbase.livelog.StoreData(lrec)
-		if err != nil {return err}
-		lbase.Update(irec, lbase.livelog.fnum)
-		return nil
+		if lbase.debug.Error(err) != nil {return nil, err}
+		mcr := lbase.Update(irec, lbase.livelog.fnum)
+		return mcr, nil
 	}
-	return ErrFileNotFound("Live log file is not defined")
+	return nil, ErrFileNotFound("Live log file is not defined")
 }
 
 // Retrieve the value for the given key.  Snips off the value type
 // prepend from the value bytes.
-func (lbase *Logbase) Get(key interface{}) (val []byte, vtype KVTYPE, err error) {
+func (lbase *Logbase) Get(key interface{}) (val []byte, vtype LBTYPE, err error) {
 	mcr := lbase.mcat.Get(key)
 	if mcr == nil {
 		err = FmtErrKeyNotFound(key)
 		val = nil
-		vtype = KVTYPE_NIL
+		vtype = LBTYPE_NIL
 	} else {
 		val, err = mcr.ReadVal(lbase)
 		val, vtype = SnipValueType(val)

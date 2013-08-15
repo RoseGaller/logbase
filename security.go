@@ -123,7 +123,8 @@ func (lbase *Logbase) GetUserPermissionFile(user string) (ufile *File, err error
 
 func (lbase *Logbase) AddUserPass(user, passhash string) error {
 	// Add user name and passhash to logbase	
-	return lbase.Put(UserPassKey(user), []byte(passhash), KVTYPE_STRING)
+	_, err := lbase.Put(UserPassKey(user), []byte(passhash), LBTYPE_STRING)
+	return err
 }
 
 func (lbase *Logbase) AddUserPermissions(user string, defperm *Permission) (err error) {

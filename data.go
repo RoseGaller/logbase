@@ -53,7 +53,7 @@ type Kdata struct {
 
 // Key type.
 type Ktype struct {
-	ktype   KVTYPE
+	ktype   LBTYPE
 }
 
 // Value data container.
@@ -63,7 +63,7 @@ type Vdata struct {
 
 // Value type.
 type Vtype struct {
-	vtype   KVTYPE
+	vtype   LBTYPE
 }
 
 // Key size in bytes.
@@ -93,8 +93,8 @@ type Rpos struct {
 
 // Provide a generic record file for "IO read infrastructure".
 type GenericRecord struct {
-	*Ksize  // typed key, that is including KVTYPE
-	*Vsize  // typed value, that is including KVTYPE
+	*Ksize  // typed key, that is including LBTYPE
+	*Vsize  // typed value, that is including LBTYPE
 	*Kdata
 	*Ktype
 	*Vdata
@@ -118,8 +118,8 @@ func NewGenericRecord() *GenericRecord {
 // Define a log file record.
 type LogRecord struct {
 	crc     LBUINT // cyclic redundancy check
-	*Ksize  // typed key, that is including KVTYPE
-	*Vsize	// typed value, that is including KVTYPE
+	*Ksize  // typed key, that is including LBTYPE
+	*Vsize	// typed value, that is including LBTYPE
 	*Kdata
 	*Ktype
 	*Vdata
@@ -156,8 +156,8 @@ func NewIndexRecord() *IndexRecord {
 
 // Define the header for an index file record.
 type IndexRecordHeader struct {
-	*Ksize  // typed key, that is including KVTYPE  
-	*Vsize  // typed value, that is including KVTYPE
+	*Ksize  // typed key, that is including LBTYPE  
+	*Vsize  // typed value, that is including LBTYPE
 	*Vpos
 }
 
@@ -173,7 +173,7 @@ func NewIndexRecordHeader() *IndexRecordHeader {
 // Define the location and size of a value.
 type ValueLocation struct {
 	fnum    LBUINT // log files indexed sequentially from 0
-	*Vsize	// typed value, that is including KVTYPE
+	*Vsize	// typed value, that is including LBTYPE
 	*Vpos
 }
 
@@ -323,7 +323,7 @@ func NewUserPermissions(p *Permission) *UserPermissions {
 // Update the master catalog map with an index record (usually) generated from
 // an individual log file, and add an existing (stale) value entry to the
 // zapmap.
-func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
+func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) *MasterCatalogRecord {
 	newmcr := NewMasterCatalogRecord()
 	newmcr.FromIndexRecord(irec, fnum)
 	key := GetKey(irec.key, irec.ktype, lbase.debug)
@@ -338,7 +338,7 @@ func (lbase *Logbase) Update(irec *IndexRecord, fnum LBUINT) {
 
 	// Update the master catalog
 	lbase.mcat.Put(key, newmcr)
-	return
+	return newmcr
 }
 
 // Gateway for reading from master catalog.
@@ -458,7 +458,7 @@ func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
 // Unpacking and interchanges.
 
 // Inject type byte(s) at start of key or value byte slice.
-func InjectType(x []byte, typ KVTYPE) []byte {
+func InjectType(x []byte, typ LBTYPE) []byte {
 	bfr := new(bytes.Buffer)
 	binary.Write(bfr, BIGEND, typ)
 	bfr.Write(x)
@@ -483,17 +483,17 @@ func InjectKeyType(key interface{}, debug *DebugLogger) []byte {
 	return InjectType(kbyts, ktype)
 }
 
-func SnipValueType(val []byte) (newval []byte, vtype KVTYPE) {
-	bfr := bufio.NewReader(bytes.NewBuffer(val[:KVTYPE_SIZE]))
+func SnipValueType(val []byte) (newval []byte, vtype LBTYPE) {
+	bfr := bufio.NewReader(bytes.NewBuffer(val[:LBTYPE_SIZE]))
 	binary.Read(bfr, BIGEND, &vtype)
-	newval = val[KVTYPE_SIZE:]
+	newval = val[LBTYPE_SIZE:]
 	return
 }
 
-func SnipKeyType(key []byte)  (newkey []byte, ktype KVTYPE) {
-	bfr := bufio.NewReader(bytes.NewBuffer(key[:KVTYPE_SIZE]))
+func SnipKeyType(key []byte)  (newkey []byte, ktype LBTYPE) {
+	bfr := bufio.NewReader(bytes.NewBuffer(key[:LBTYPE_SIZE]))
 	binary.Read(bfr, BIGEND, &ktype)
-	newkey	= key[KVTYPE_SIZE:]
+	newkey	= key[LBTYPE_SIZE:]
 	return
 }
 
@@ -687,16 +687,16 @@ func (mcr *MasterCatalogRecord) ReadVal(lbase *Logbase) (val []byte, err error) 
 
 // Byte packing functions.
 
-func MakeLogRecord(key interface{}, val []byte, vtype KVTYPE, debug *DebugLogger) *LogRecord {
+func MakeLogRecord(key interface{}, val []byte, vtype LBTYPE, debug *DebugLogger) *LogRecord {
 	lrec := NewLogRecord()
 	ktype := GetKeyType(key, debug)
 	kbyts := KeyToBytes(key)
 	lrec.key = kbyts
 	lrec.ktype = ktype
-	lrec.ksz = AsLBUINT(len(kbyts) + KVTYPE_SIZE)
+	lrec.ksz = AsLBUINT(len(kbyts) + LBTYPE_SIZE)
 	lrec.val = val
 	lrec.vtype = vtype
-	lrec.vsz = AsLBUINT(len(val) + KVTYPE_SIZE)
+	lrec.vsz = AsLBUINT(len(val) + LBTYPE_SIZE)
 	return lrec
 }
 
@@ -918,101 +918,3 @@ func Degobify(byts []byte, param interface{}, debug *DebugLogger) {
 	debug.Error(err)
 	return
 }
-
-func NewKey(ktype KVTYPE, debug *DebugLogger) interface{} {
-	switch ktype {
-	case KVTYPE_UINT8:
-		var p uint8
-		return interface{}(p)
-	case KVTYPE_UINT16:
-		var p uint16
-		return interface{}(p)
-	case KVTYPE_UINT32:
-		var p uint32
-		return interface{}(p)
-	case KVTYPE_UINT64:
-		var p uint64
-		return interface{}(p)
-	case KVTYPE_INT8:
-		var p int8
-		return interface{}(p)
-	case KVTYPE_INT16:
-		var p int16
-		return interface{}(p)
-	case KVTYPE_INT32:
-		var p int32
-		return interface{}(p)
-	case KVTYPE_INT64:
-		var p int64
-		return interface{}(p)
-	case KVTYPE_FLOAT32:
-		var p float32
-		return interface{}(p)
-	case KVTYPE_FLOAT64:
-		var p float64
-		return interface{}(p)
-	case KVTYPE_COMPLEX64:
-		var p complex64
-		return interface{}(p)
-	case KVTYPE_COMPLEX128:
-		var p complex128
-		return interface{}(p)
-	case KVTYPE_STRING:
-		var p string
-		return interface{}(p)
-	default:
-		debug.Error(FmtErrBadType("Bad key type: %d", ktype))
-	}
-    return nil
-}
-
-func GetKey(kbyts []byte, ktype KVTYPE, debug *DebugLogger) (key interface{}) {
-	if IsFixedSizeType(ktype) {
-		key = NewKey(ktype, debug)
-		bfr := bufio.NewReader(bytes.NewBuffer(kbyts))
-		binary.Read(bfr, BIGEND, &key)
-	} else {
-		// Must be a string
-		key = string(kbyts)
-	}
-    return
-}
-
-func IsFixedSizeType(typ KVTYPE) bool {
-    return typ < KVTYPE_BYTEARRAY
-}
-
-func GetKeyType(key interface{}, debug *DebugLogger) KVTYPE {
-	switch ktype := key.(type) {
-	case uint8:
-		return KVTYPE_UINT8
-	case uint16:
-		return KVTYPE_UINT16
-	case uint32:
-		return KVTYPE_UINT32
-	case uint64:
-		return KVTYPE_UINT64
-	case int8:
-		return KVTYPE_INT8
-	case int16:
-		return KVTYPE_INT16
-	case int32:
-		return KVTYPE_INT32
-	case int64:
-		return KVTYPE_INT64
-	case float32:
-		return KVTYPE_FLOAT32
-	case float64:
-		return KVTYPE_FLOAT64
-	case complex64:
-		return KVTYPE_COMPLEX64
-	case complex128:
-		return KVTYPE_COMPLEX128
-	case string:
-		return KVTYPE_STRING
-	default:
-		debug.Error(FmtErrBadType("Unrecognised key type: %d", ktype))
-	}
-    return KVTYPE_NIL
-}
-
