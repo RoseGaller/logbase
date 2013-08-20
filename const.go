@@ -12,6 +12,7 @@ import (
 
 type LBUINT uint32 // Unsigned Logbase integer type used on file
 type LBTYPE uint8 // Value type identifier
+type MCID_TYPE uint64 // Master Catalog record id key type
 
 // Keep these consistent
 const (
@@ -19,6 +20,7 @@ const (
 	LBTYPE_SIZE		int = 1
 	LBUINT_MAX      int64 = 4294967295
 	CRC_SIZE		LBUINT = 4
+	VALOC_SIZE		LBUINT = LBUINT_SIZE_x3 + LBUINT(LBTYPE_SIZE)
 )
 
 // Hard wire key/value types for all time.
@@ -41,14 +43,19 @@ const (
 	LBTYPE_COMPLEX64	LBTYPE = 110
 	LBTYPE_COMPLEX128	LBTYPE = 111
 
+	LBTYPE_VALOC		LBTYPE = 120 // Location in log file of value bytes
+	LBTYPE_MCID			LBTYPE = 121 // Master Catalog record id key type
+	LBTYPE_MAP			LBTYPE = 125 // map[interface{}]interface{}
+	LBTYPE_LIST			LBTYPE = 130 // []interface{}
+
 	// Only types with underlying []byte type after here
     LBTYPE_BYTEARRAY	LBTYPE = 170 // Cannot be a key type
 	LBTYPE_STRING		LBTYPE = 171
 	LBTYPE_GOB			LBTYPE = 172
 	LBTYPE_LOCATION		LBTYPE = 173 // String of file path or URI
 
-	LBTYPE_MCR			LBTYPE = 190 // String key to Master Catalog Record
-	LBTYPE_DOC			LBTYPE = 191 // A DocRef including Document kind and DocMap key
+	LBTYPE_MCK			LBTYPE = 190 // String Master Catalog Key
+	LBTYPE_DOC			LBTYPE = 191 // Composite of LBTYPE_MCK and LBTYPE_MAP
 )
 
 // Keys
@@ -91,6 +98,9 @@ func NewKey(ktype LBTYPE, debug *DebugLogger) interface{} {
 		return interface{}(p)
 	case LBTYPE_COMPLEX128:
 		var p complex128
+		return interface{}(p)
+	case LBTYPE_MCID:
+		var p MCID_TYPE
 		return interface{}(p)
 	case LBTYPE_STRING:
 		var p string
@@ -143,6 +153,8 @@ func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
 		return LBTYPE_COMPLEX64
 	case complex128:
 		return LBTYPE_COMPLEX128
+	case MCID_TYPE:
+		return LBTYPE_MCID
 	case string:
 		return LBTYPE_STRING
 	default:

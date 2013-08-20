@@ -120,7 +120,6 @@ type Logbase struct {
 	mcat        *MasterCatalog
 	zmap        *Zapmap
 	users		*Users
-	docs		*DocumentCatalog
 }
 
 // Make a new Logbase instance based on the given directory path.
@@ -140,7 +139,6 @@ func NewLogbase() *Logbase {
 	    mcat:   NewMasterCatalog(),
 	    zmap:   NewZapmap(),
 		users:	NewUsers(),
-		docs:	NewDocumentCatalog(),
 	}
 }
 
@@ -164,14 +162,13 @@ func DefaultConfig() *LogbaseConfiguration {
 
 // Load optional logbase configuration file parameters.
 func LoadConfig(path string) (config *LogbaseConfiguration, err error) {
+	config = DefaultConfig()
 	_, err = os.Stat(path)
 	if os.IsNotExist(err) {
-		config = DefaultConfig()
 		err = nil
 		return
 	}
 	if err != nil {return}
-	config = new(LogbaseConfiguration)
 	_, err = toml.DecodeFile(path, &config)
 	return
 }
@@ -231,6 +228,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	}
 
 	if buildmasterzap {
+		ResetMCID()
 		lbase.debug.Advise(
 			"Could not find or load master and zapmap files, " +
 			"build from index files...")
@@ -267,7 +265,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 			}
 			if lbase.debug.Error(err) != nil {return err}
 			for _, irec := range lfindex.list {
-				lbase.Update(irec, fnum)
+				lbase.UpdateValueLocation(irec, fnum)
 			}
 		}
 	}
@@ -285,10 +283,13 @@ func (lbase *Logbase) Init(user, passhash string) error {
 
 // Save the key-value pair in the live log.  Handles the value type
 // prepend into the value bytes.
-func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (*MasterCatalogRecord, error) {
-	lbase.debug.SuperFine(
-		"Putting (%v,[%d]byte) into logbase %s",
-		key, len(val), lbase.name)
+func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCatalogRecord, error) {
+	//lbase.debug.SuperFine(
+	//	"Putting (%v,[%d]byte) into logbase %s",
+	//	key, len(val), lbase.name)
+	lbase.debug.Basic(
+		"Putting (%v,%v) into logbase %s",
+		key, val, lbase.name)
 
 	if lbase.HasLiveLog() {
 		lrec := MakeLogRecord(key, val, vtype, lbase.debug)
@@ -299,7 +300,7 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (*MasterCat
 
 	    irec, err := lbase.livelog.StoreData(lrec)
 		if lbase.debug.Error(err) != nil {return nil, err}
-		mcr := lbase.Update(irec, lbase.livelog.fnum)
+		mcr := lbase.UpdateValueLocation(irec, lbase.livelog.fnum)
 		return mcr, nil
 	}
 	return nil, ErrFileNotFound("Live log file is not defined")
@@ -315,7 +316,7 @@ func (lbase *Logbase) Get(key interface{}) (val []byte, vtype LBTYPE, err error)
 		vtype = LBTYPE_NIL
 	} else {
 		val, err = mcr.ReadVal(lbase)
-		val, vtype = SnipValueType(val)
+		val, vtype = SnipValueType(val, lbase.debug)
 	}
 
 	return

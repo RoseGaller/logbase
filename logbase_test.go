@@ -12,7 +12,7 @@ const (
 	logfile_maxbytes = 100
 	debug_level = "BASIC"
 	user = "admin"
-	passhash = "root"
+	passhash = "root" // Not the actual hash in this case
 )
 
 var lbtest string
@@ -39,7 +39,7 @@ func TestSaveRetrieveKeyValue2(t *testing.T) {
 func TestSaveRetrieveKeyValue3(t *testing.T) {
 	pair++
 	saveRetrieveKeyValue(k[pair], v[pair], t)
-	mcr := make([]*MasterCatalogRecord, 3)
+	mcr := make([]MasterCatalogRecord, 3)
 	mcr[0] = lbase.mcat.Get(k[pair])
 	saveRetrieveKeyValue(k[pair], v[pair], t)
 	mcr[1] = lbase.mcat.Get(k[pair])
@@ -58,9 +58,11 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 		t.Fatalf("The zapmap should contain precisely 2 entries")
 	}
 	zrec0 := NewZapRecord()
-	zrec0.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), mcr[0])
+	vloc0 := mcr[0].(*ValueLocation)
+	zrec0.FromValueLocation(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), vloc0)
 	zrec1 := NewZapRecord()
-	zrec1.FromMasterCatalogRecord(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), mcr[1])
+	vloc1 := mcr[1].(*ValueLocation)
+	zrec1.FromValueLocation(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), vloc1)
 	matches := zrec0.Equals(zrecs[0]) && zrec1.Equals(zrecs[1])
 	if !matches {
 		t.Fatalf("The zapmap should contain {%s%s} but is instead {%s%s}",
@@ -323,6 +325,7 @@ func dumpLogfiles() {
 		lbase.debug.Fine("Logfile records for %s:", lfile.abspath)
 		lrecs, err2 := lfile.Load()
 		if err2 != nil {WrapError("Could not get logfile", err2).Fatal()}
+		lbase.debug.Check("len=%v",len(lrecs))
 		for _, lrec := range lrecs {
 			lbase.debug.Fine(" %s", lrec.String())
 		}

@@ -147,17 +147,18 @@ func (lbase *Logbase) AddUser(user, passhash string, defperm *Permission) (err e
 	return err
 }
 
-func (lbase *Logbase) IsValidUser(user, passhash string) bool {
-	val, _, _ := lbase.Get(UserPassKey(user))
-	if val == nil {return false}
-	if string(val) == passhash {return true}
-    return false
-}
-
 func (lbase *Logbase) IsUser(user string) bool {
 	val, _, _ := lbase.Get(UserPassKey(user))
 	if val == nil {return false}
     return true
+}
+
+func (lbase *Logbase) IsValidUser(user, passhash string) bool {
+	val, _, _ := lbase.Get(UserPassKey(user))
+	if val == nil {return false}
+	if string(val) == passhash {return true}
+	lbase.debug.Check("key=%q expected = %q actual = %v", UserPassKey(user), passhash, val)
+    return false
 }
 
 func UserKey(user string) string {

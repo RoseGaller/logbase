@@ -16,6 +16,8 @@
 	C       Checksum
 	RS      (Entire) Record size
 	RP      (Entire) Record position
+	LBT		Logbase Type (LBTYPE)
+	MCK		Master Catalog Key (MCID_TYPE)
 
 	GENERIC RECORD (used in ReadRecord)
 	+------+------+------+------+------+------+------+------+
@@ -41,12 +43,20 @@
 			             |<---- GV --->|
 
 	MASTER CATALOG FILE RECORD (MASTER_RECORD)
-	+------+------+------+------+------+------+
-	|      |             |      |      |      |
-	|  KS  |      K      |  F   |  VS  |  VP  |    No GVS
-	|      |             |      |      |      |
-	+------+------+------+------+------+------+
-			             |<------- GV ------->|
+	...with a ValueLocation
+	+------+------+------+------+------+------+------+
+	|      |             |      |      |      |      |
+	|  KS  |      K      | LBT  |  F   |  VS  |  VP  |  No GVS
+	|      |             |      |      |      |      |
+	+------+------+------+------+------+------+------+
+			             |<----------- GV ---------->|
+	...with a MasterCatalogKey
+	+------+------+------+------+------+
+	|      |             |      |      |
+	|  KS  |      K      | LBT  |  MCK |   No GVS
+	|      |             |      |      |
+	+------+------+------+------+------+
+			             |<--- GV ---->|
 
 	ZAPMAP FILE RECORD (ZAP_RECORD)
 	+------+------+------+------+------+------+------+------+------+------+
@@ -353,8 +363,10 @@ func MakeIndexfileName(fnum LBUINT, ext string) string {
 func (lfile *Logfile) Index() (*Index, error) {
 	index := new(Index)
 	f := func(rec *GenericRecord) error {
-		irec := rec.ToLogRecord().ToIndexRecord()
-		index.list = append(index.list, irec)
+		if rec.ksz > 0 {
+			irec := rec.ToLogRecord().ToIndexRecord()
+			index.list = append(index.list, irec)
+		}
 		return nil
 	}
 	err := lfile.Process(f, LOG_RECORD, true)
@@ -366,8 +378,10 @@ func (lfile *Logfile) Index() (*Index, error) {
 func (lfile *Logfile) Load() ([]*LogRecord, error) {
 	var lrecs []*LogRecord
 	f := func(rec *GenericRecord) error {
-		lrec := rec.ToLogRecord()
-		lrecs = append(lrecs, lrec)
+		if rec.ksz > 0 {
+			lrec := rec.ToLogRecord()
+			lrecs = append(lrecs, lrec)
+		}
 		return nil
 	}
 	err := lfile.Process(f, LOG_RECORD, true)
@@ -519,8 +533,10 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 func (ifile *Indexfile) Load() (lfindex *Index, err error) {
 	lfindex = new(Index)
 	f := func(rec *GenericRecord) error {
-		irec := rec.ToIndexRecord()
-		lfindex.list = append(lfindex.list, irec)
+		if rec.ksz > 0 {
+			irec := rec.ToIndexRecord()
+			lfindex.list = append(lfindex.list, irec)
+		}
 		return nil
 	}
 	err = ifile.Process(f, INDEX_RECORD, false)
@@ -554,8 +570,10 @@ func (zmap *Zapmap) Load(debug *DebugLogger) (err error) {
 	if zmap.file.size == 0 {return}
 	zmap.Lock()
 	f := func(rec *GenericRecord) error {
-		key, zrecs := rec.ToZapRecordList(debug)
-		zmap.zapmap[key] = zrecs // Don't need to use gateway because zmap is fresh
+		if rec.ksz > 0 {
+			key, zrecs := rec.ToZapRecordList(debug)
+			zmap.zapmap[key] = zrecs // Don't need to use gateway because zmap is fresh
+		}
 		return nil
 	}
 	err = zmap.file.Process(f, ZAP_RECORD, true)
@@ -584,13 +602,17 @@ func (zmap *Zapmap) Save(debug *DebugLogger) (err error) {
 
 // Read master catalog file into a new master catalog.
 func (mcat *MasterCatalog) Load(debug *DebugLogger) (err error) {
+	ResetMCID()
 	mcat.file.Open(READ_ONLY)
 	defer mcat.file.Close()
 	if mcat.file.size == 0 {return}
 	mcat.Lock()
 	f := func(rec *GenericRecord) error {
-		key, mcr := rec.ToMasterCatalogRecord(debug)
-		mcat.index[key] = mcr // Don't need to use gateway because mcat is fresh
+		if rec.ksz > 0 {
+			key, mcr := rec.ToMasterCatalogRecord(debug)
+			mcat.index[key] = mcr // Don't need to use gateway because mcat is fresh
+			IncIfMCID(key) // Increment the NextMCI if necessary 
+		}
 		return nil
 	}
 	err = mcat.file.Process(f, MASTER_RECORD, false)
@@ -605,7 +627,7 @@ func (mcat *MasterCatalog) Save(debug *DebugLogger) (err error) {
 	var pos LBUINT = 0
 	mcat.RLock()
 	for key, mcr := range mcat.index {
-		nw, err = mcat.file.tmp.LockedWriteAt(PackMasterRecord(key, mcr, debug), pos)
+		nw, err = mcat.file.tmp.LockedWriteAt(mcr.Pack(key, debug), pos)
 		if err != nil {return}
 		pos = pos.Plus(nw)
 	}
@@ -624,8 +646,10 @@ func (up *UserPermissions) Load(debug *DebugLogger) (err error) {
 	if up.file.size == 0 {return}
 	up.Lock()
 	f := func(rec *GenericRecord) error {
-		key, upr := rec.ToUserPermissionRecord(debug)
-		up.index[key] = upr // Don't need to use gateway because up is fresh
+		if rec.ksz > 0 {
+			key, upr := rec.ToUserPermissionRecord(debug)
+			up.index[key] = upr // Don't need to use gateway because up is fresh
+		}
 		return nil
 	}
 	err = up.file.Process(f, PERMISSION_RECORD, false)

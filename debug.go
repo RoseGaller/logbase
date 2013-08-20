@@ -93,6 +93,10 @@ func CaptureCaller(jumpsSinceCall int) *GoCaller {
 	}
 }
 
+func (debug *DebugLogger) GetLevel() int {
+	return debug.level
+}
+
 // Loggers
 
 // Return a default DebugLogger writing to the screen and a file.

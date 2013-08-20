@@ -254,14 +254,15 @@ func (file *File) Process(process Processor, rectype int, needDataVal bool) (err
 	defer file.Close()
 	var rec *GenericRecord
 	var pos LBUINT = 0
+	var err2 error
 	for {
 		rec, pos, err = file.ReadRecord(pos, rectype, needDataVal)
 		file.debug.Fine("Process generic rec = %v pos = %v err = %v", rec, pos, err)
-	    if err != nil {break}
-		err = process(rec)
-		if err != nil {break}
+		err2 = process(rec)
+		if err != nil || err2 != nil {break}
 	}
 	if err == io.EOF {err = nil}
+	if err == nil && err2 != nil {err = err2}
 	return
 }
 
@@ -277,7 +278,7 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 	file.Goto(pos)
 
 	// Does this record type have a generic value size?
-	var readvsz = DoReadDataValueSize[rectype]
+	var readvsz = FileDecodeConfigs[rectype].readDataValueSize
 
 	if readvsz {
 		size := LBUINT(ParamSize(rec.vsz))
@@ -291,7 +292,7 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 	// Key
 	kbyts, err := file.LockedReadAt(pos, rec.ksz, "key")
 	key, ktype := SnipKeyType(kbyts)
-	rec.key = key
+	rec.kbyts = key
 	rec.ktype = ktype
 	if err != nil {return}
 
@@ -300,11 +301,11 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 
 	// Generic Value
 	var valsize LBUINT = 0
-	var snipval = DoSnipValueType[rectype]
+	var snipval = FileDecodeConfigs[rectype].snipValueType
 	if readvsz {
 		if readDataVal {valsize = rec.vsz} // otherwise, valsize = 0
 	} else {
-		valsize = GenericValueSize[rectype]
+		valsize = FileDecodeConfigs[rectype].genericValueSize
 	}
 
 	if valsize > 0 {
@@ -312,11 +313,11 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 		var vbyts []byte
 	    vbyts, err = file.LockedReadAt(pos, valsize, "value")
 		if snipval {
-			val, vtype := SnipValueType(vbyts)
-			rec.val = val
+			val, vtype := SnipValueType(vbyts, file.debug)
+			rec.vbyts = val
 			rec.vtype = vtype
 		} else {
-			rec.val = vbyts
+			rec.vbyts = vbyts
 		}
 	    if err != nil {return}
 
