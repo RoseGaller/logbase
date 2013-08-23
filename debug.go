@@ -277,3 +277,21 @@ func FmtHexString(b []byte) string {
 	}
 	return buf.String()
 }
+
+func (debug *DebugLogger) DumpMasterCatalog(lbase *Logbase) {
+	debug.Advise("Master catalog records:")
+	for key, mcr := range lbase.mcat.index {
+		debug.Advise("%q %s", key, mcr.String())
+	}
+}
+
+func (debug *DebugLogger) DumpZapmap(lbase *Logbase) {
+	debug.Advise("Zapmap records:")
+	for key, zrecs := range lbase.zmap.zapmap {
+		var line string = ""
+		for _, zrec := range zrecs {
+			line += zrec.String()
+		}
+		debug.Advise("%q {%s}", key, line)
+	}
+}

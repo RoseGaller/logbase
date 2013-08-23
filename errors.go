@@ -136,26 +136,26 @@ func ErrBadType(msg string) *AppError {
 // Unexpected data size.
 
 func FmtErrDataSize(desc, path string, size LBUINT, nread int) *AppError {
-	return ErrDataSize(fmt.Sprintf(
+	return ErrDataSize(
 		"Invalid %s size while reading record for file %q. " +
 		"Expected %d got %d bytes.",
-		desc, path, size, nread))
+		desc, path, size, nread)
 }
 
 func FmtErrPositionExceedsFileSize(path string, pos, size int) *AppError {
-	return ErrDataSize(fmt.Sprintf(
+	return ErrDataSize(
 		"The position %d for file %q exceeds the file size %d.",
-		pos, path, size))
+		pos, path, size)
 }
 
 func FmtErrPartialLocationData(size, nread LBUINT) *AppError {
-	return ErrDataSize(fmt.Sprintf(
+	return ErrDataSize(
 		"A ValueLocationRecord has %d bytes but the GenericRecord read " +
 		"%d bytes, so some data must be missing.",
-		size, nread))
+		size, nread)
 }
 
-func ErrDataSize(msg string) *AppError {
+func ErrDataSize(msg string, a ...interface{}) *AppError {
 	return makeAppError().Describe(msg, "unexpected_data_size")
 }
 

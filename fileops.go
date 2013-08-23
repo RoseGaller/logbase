@@ -16,8 +16,6 @@
 	C       Checksum
 	RS      (Entire) Record size
 	RP      (Entire) Record position
-	LBT		Logbase Type (LBTYPE)
-	MCK		Master Catalog Key (MCID_TYPE)
 
 	GENERIC RECORD (used in ReadRecord)
 	+------+------+------+------+------+------+------+------+
@@ -43,20 +41,12 @@
 			             |<---- GV --->|
 
 	MASTER CATALOG FILE RECORD (MASTER_RECORD)
-	...with a ValueLocation
-	+------+------+------+------+------+------+------+
-	|      |             |      |      |      |      |
-	|  KS  |      K      | LBT  |  F   |  VS  |  VP  |  No GVS
-	|      |             |      |      |      |      |
-	+------+------+------+------+------+------+------+
-			             |<----------- GV ---------->|
-	...with a MasterCatalogKey
-	+------+------+------+------+------+
-	|      |             |      |      |
-	|  KS  |      K      | LBT  |  MCK |   No GVS
-	|      |             |      |      |
-	+------+------+------+------+------+
-			             |<--- GV ---->|
+	+------+------+------+------+------+------+
+	|      |             |      |      |      |
+	|  KS  |      K      |  F   |  VS  |  VP  |  No GVS
+	|      |             |      |      |      |
+	+------+------+------+------+------+------+
+			             |<------- GV ------->|
 
 	ZAPMAP FILE RECORD (ZAP_RECORD)
 	+------+------+------+------+------+------+------+------+------+------+
@@ -471,7 +461,7 @@ func (lfile *Logfile) Zap(zmap *Zapmap, bfrsz LBUINT) error {
 	for i := 0; i < len(cpos); i++ {
 		// First, we need to determine the chunk that needs to be read
 		kr = cpos[i]
-		n, rem = DivideChunkByBuffer(csz[i], bfrsz)
+		n, rem = Divide(csz[i], bfrsz)
 		lfile.debug.SuperFine(
 			" dividing chunk %d by %d yields n = %d rem = %d",
 			csz[i], bfrsz, n, rem)
@@ -609,8 +599,8 @@ func (mcat *MasterCatalog) Load(debug *DebugLogger) (err error) {
 	mcat.Lock()
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			key, mcr := rec.ToMasterCatalogRecord(debug)
-			mcat.index[key] = mcr // Don't need to use gateway because mcat is fresh
+			key, vloc := rec.ToValueLocation(debug)
+			mcat.index[key] = vloc // Don't need to use gateway because mcat is fresh
 			IncIfMCID(key) // Increment the NextMCI if necessary 
 		}
 		return nil
@@ -625,9 +615,16 @@ func (mcat *MasterCatalog) Save(debug *DebugLogger) (err error) {
 	mcat.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
+	var vloc *ValueLocation
 	mcat.RLock()
 	for key, mcr := range mcat.index {
-		nw, err = mcat.file.tmp.LockedWriteAt(mcr.Pack(key, debug), pos)
+		switch r := mcr.(type) {
+		case *ValueLocation:
+			vloc = r
+		case *Value:
+			vloc = r.ValueLocation
+		}
+		nw, err = mcat.file.tmp.LockedWriteAt(vloc.Pack(key, debug), pos)
 		if err != nil {return}
 		pos = pos.Plus(nw)
 	}

@@ -157,7 +157,6 @@ func (lbase *Logbase) IsValidUser(user, passhash string) bool {
 	val, _, _ := lbase.Get(UserPassKey(user))
 	if val == nil {return false}
 	if string(val) == passhash {return true}
-	lbase.debug.Check("key=%q expected = %q actual = %v", UserPassKey(user), passhash, val)
     return false
 }
 

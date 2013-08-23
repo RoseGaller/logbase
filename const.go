@@ -14,10 +14,11 @@ type LBUINT uint32 // Unsigned Logbase integer type used on file
 type LBTYPE uint8 // Value type identifier
 type MCID_TYPE uint64 // Master Catalog record id key type
 
-// Keep these consistent
+// Keep these consistent!
 const (
 	LBUINT_SIZE		LBUINT = 4 // bytes 
-	LBTYPE_SIZE		int = 1
+	LBTYPE_SIZE		int = 1 // bytes
+	MCID_TYPE_SIZE	int = 8 // bytes
 	LBUINT_MAX      int64 = 4294967295
 	CRC_SIZE		LBUINT = 4
 	VALOC_SIZE		LBUINT = LBUINT_SIZE_x3 + LBUINT(LBTYPE_SIZE)
@@ -44,7 +45,8 @@ const (
 	LBTYPE_COMPLEX128	LBTYPE = 111
 
 	LBTYPE_VALOC		LBTYPE = 120 // Location in log file of value bytes
-	LBTYPE_MCID			LBTYPE = 121 // Master Catalog record id key type
+	LBTYPE_MCID		    LBTYPE = 121 // Master Catalog record id
+	LBTYPE_MCID_SET     LBTYPE = 122 // Set (no repeats) list of Master Catalog record ids
 	LBTYPE_MAP			LBTYPE = 125 // map[interface{}]interface{}
 	LBTYPE_LIST			LBTYPE = 130 // []interface{}
 
@@ -163,3 +165,7 @@ func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
     return LBTYPE_NIL
 }
 
+func IsStringType(typ LBTYPE) bool {
+	switch typ {case LBTYPE_STRING, LBTYPE_LOCATION, LBTYPE_MCK: return true}
+	return false
+}

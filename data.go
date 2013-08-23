@@ -89,11 +89,11 @@ type Rpos struct {
 
 // Provide a generic record file for "IO read infrastructure".
 type GenericRecord struct {
-	*Ksize  // typed key, that is including LBTYPE
-	*Vsize  // typed value, that is including LBTYPE
+	*Ksize  // typed key, including LBTYPE
+	*Vsize  // typed value, including LBTYPE
 	*Kdata
 	*Ktype
-	*Vdata
+	*Vdata  // type snipped only according to FileDecodeConfgs
 	*Vtype
 	*Vpos
 }
@@ -114,11 +114,11 @@ func NewGenericRecord() *GenericRecord {
 // Define a log file record.
 type LogRecord struct {
 	crc     LBUINT // cyclic redundancy check
-	*Ksize  // typed key, that is including LBTYPE
-	*Vsize	// typed value, that is including LBTYPE
+	*Ksize  // typed key, including LBTYPE
+	*Vsize	// typed value, including LBTYPE
 	*Kdata
 	*Ktype
-	*Vdata
+	*Vdata  // does not include LBTYPE
 	*Vtype
 }
 
@@ -181,12 +181,20 @@ func NewValueLocation() *ValueLocation {
 	}
 }
 
-type MasterCatalogId struct {
-	id		MCID_TYPE
+// Define a data container.
+type Value struct {
+	vtype	LBTYPE
+	*Vdata  // Data with LBTYPE snipped off the front
+	*ValueLocation
 }
 
-func NewMasterCatalogId() *MasterCatalogId {
-	return &MasterCatalogId{}
+// Init a Value.
+func NewValue() *Value {
+	return &Value{
+		vtype: LBTYPE_NIL,
+		Vdata: &Vdata{},
+		ValueLocation: NewValueLocation(),
+	}
 }
 
 // Define the location and size of a record.
@@ -205,12 +213,14 @@ func NewRecordLocation() *RecordLocation {
 }
 
 // Define a record used in the logbase master key index.
+// Current implementors:
+//  Value
+//  ValueLocation
 type MasterCatalogRecord interface {
 	Equals(other MasterCatalogRecord) bool
-	String()	string
-	ToRecordLocation(ksz LBUINT) *RecordLocation
-	Pack(key interface{}, debug *DebugLogger) []byte
-	ReadVal(lbase *Logbase) (val []byte, err error)
+	String()			string
+	ToValueLocation()	*ValueLocation
+	ReadVal(lbase *Logbase) (val []byte, vtype LBTYPE, err error)
 }
 
 // Identify a logfile record for zapping.
@@ -308,29 +318,30 @@ func NewUserPermissions(p *Permission) *UserPermissions {
 
 // Logbase methods.
 
-// Update the master catalog map with an index record (usually) generated from
-// an individual log file, and add an existing (stale) value entry to the
-// zapmap.
-func (lbase *Logbase) UpdateValueLocation(irec *IndexRecord, fnum LBUINT) *ValueLocation {
+// Update the Zapmap.
+func (lbase *Logbase) UpdateZapmap(irec *IndexRecord, fnum LBUINT) (interface{}, *ValueLocation) {
 	newvloc := NewValueLocation()
 	newvloc.FromIndexRecord(irec, fnum)
 	key := GetKey(irec.kbyts, irec.ktype, lbase.debug)
 	old := lbase.mcat.Get(key)
 
 	if old != nil {
-		if _, ok := old.(*ValueLocation); ok {
-			// Add to zapmap
-			zrec := NewZapRecord()
-			rloc := old.ToRecordLocation(irec.ksz)
-			zrec.RecordLocation = rloc
-			lbase.zmap.PutRecord(key, zrec)
-		}
+		vloc := old.ToValueLocation()
+		// Add to zapmap
+		zrec := NewZapRecord()
+		rloc := vloc.ToRecordLocation(irec.ksz)
+		zrec.RecordLocation = rloc
+		lbase.zmap.PutRecord(key, zrec)
 	}
 
-	// Update the master catalog
-	lbase.mcat.Put(key, newvloc)
+	return key, newvloc
+}
+
+// Update the Master Catalog.
+func (lbase *Logbase) UpdateMasterCatalog(key interface{}, mcr MasterCatalogRecord) MasterCatalogRecord {
+	lbase.mcat.Put(key, mcr)
 	IncIfMCID(key)
-	return newvloc
+	return mcr
 }
 
 // Gateway for reading from master catalog.
@@ -445,16 +456,14 @@ func (vloc *ValueLocation) Equals(other MasterCatalogRecord) bool {
 }
 
 // Compare for equality against MasterCatalogRecord interface.
-func (mcid *MasterCatalogId) Equals(other MasterCatalogRecord) bool {
+func (val *Value) Equals(other MasterCatalogRecord) bool {
 	if other == nil {return false}
-	if othermcid, ok := other.(*MasterCatalogId); ok {
-		return (mcid.id == othermcid.id)
-	}
-	return false
+	return val.ValueLocation.Equals(other.ToValueLocation())
 }
 
 // Compare for equality against another ZapRecord.
 func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
+	if other == nil {return false}
 	return (zrec.fnum == other.fnum &&
 		zrec.rsz == other.rsz &&
 		zrec.rpos == other.rpos)
@@ -568,31 +577,16 @@ func (lrec *LogRecord) ToIndexRecord() *IndexRecord {
 }
 
 // Map GenericRecord to a new MasterLogRecord.
-func (rec *GenericRecord) ToMasterCatalogRecord(debug *DebugLogger) (interface{}, MasterCatalogRecord) {
+func (rec *GenericRecord) ToValueLocation(debug *DebugLogger) (interface{}, *ValueLocation) {
 	key := GetKey(rec.kbyts, rec.ktype, debug)
-	val, vtype := SnipValueType(rec.vbyts, debug)
-	switch vtype {
-	case LBTYPE_MCK:
-		mcid := NewMasterCatalogId()
-		// Unpack
-		bfr := bufio.NewReader(bytes.NewBuffer(val))
-		binary.Read(bfr, BIGEND, &mcid.id)
-		return key, mcid
-	case LBTYPE_VALOC:
-		vloc := NewValueLocation()
-		// Unpack
-		bfr := bufio.NewReader(bytes.NewBuffer(val))
-		binary.Read(bfr, BIGEND, &vloc.fnum)
-		binary.Read(bfr, BIGEND, &vloc.vsz)
-		binary.Read(bfr, BIGEND, &vloc.vpos)
-		return key, vloc
-	}
-	debug.Error(FmtErrBadType(
-		"A MasterCatalogRecord can only have LBTYPEs of " +
-		"%v and %v, but the the generic record %v value " +
-		"has an LBTYPE %v",
-		LBTYPE_MCK, LBTYPE_VALOC, rec, vtype))
-	return key, nil
+	vbyts, _ := rec.GetValueAndType(MASTER_RECORD, debug)
+	vloc := NewValueLocation()
+	// Unpack
+	bfr := bufio.NewReader(bytes.NewBuffer(vbyts))
+	binary.Read(bfr, BIGEND, &vloc.fnum)
+	binary.Read(bfr, BIGEND, &vloc.vsz)
+	binary.Read(bfr, BIGEND, &vloc.vpos)
+	return key, vloc
 }
 
 // Map GenericRecord to a new ZapRecord list.
@@ -622,6 +616,25 @@ func (rec *GenericRecord) ToUserPermissionRecord(debug *DebugLogger) (interface{
 	upr.Delete = PERMISSION_DELETE == (p & PERMISSION_DELETE)
 	fmt.Printf("CHECK key=%v upr=%v\n", key, upr)
 	return key, upr
+}
+
+// Extract ValueLocation from itself (identity).
+func (vloc *ValueLocation) ToValueLocation() *ValueLocation {
+	return vloc
+}
+
+// Extract ValueLocation from Value.
+func (val *Value) ToValueLocation() *ValueLocation {
+	return val.ValueLocation
+}
+
+func (rec *GenericRecord) GetValueAndType(rectype int, debug *DebugLogger) ([]byte, LBTYPE) {
+	if FileDecodeConfigs[rectype].snipValueType {
+		// LBTYPE has already been snipped
+		return rec.vbyts, rec.vtype
+	} else {
+        return SnipValueType(rec.vbyts, debug)
+	}
 }
 
 // Formatted output for debugging.
@@ -673,9 +686,21 @@ func (vloc *ValueLocation) String() string {
 		vloc.vpos)
 }
 
-// Return string representation of a MasterCatalogId.
-func (mcid *MasterCatalogId) String() string {
-	return fmt.Sprintf("%d", mcid.id)
+// Return string representation of a Value.
+func (val *Value) String() string {
+	return fmt.Sprintf(
+		"(vtype=%d vbyts=%s %s)",
+		val.vtype,
+		ValToString(val.vbyts, val.vtype),
+		val.ValueLocation.String())
+}
+
+func ValToString(val []byte, vtype LBTYPE) string {
+	if IsStringType(vtype) {
+		return fmt.Sprintf("%q", string(val))
+	} else {
+        return fmt.Sprintf("[%d]bytes", len(val))
+	}
 }
 
 // Return string representation of a ZapRecord.
@@ -718,23 +743,19 @@ func (vloc *ValueLocation) Logfile(lbase *Logbase) (*Logfile, error) {
 	return lbase.GetLogfile(vloc.fnum)
 }
 
-// Read the value pointed to by the ValueLocation.
-func (vloc *ValueLocation) ReadVal(lbase *Logbase) (val []byte, err error) {
+// Read the value pointed to by the ValueLocation and snip off the
+// leading LBTYPE.
+func (vloc *ValueLocation) ReadVal(lbase *Logbase) (val []byte, vtype LBTYPE, err error) {
 	lfile, err := vloc.Logfile(lbase)
 	if err != nil {return}
-	return lfile.ReadVal(vloc.vpos, vloc.vsz)
+	vbyts, err := lfile.ReadVal(vloc.vpos, vloc.vsz)
+	val, vtype = SnipValueType(vbyts, lbase.debug)
+	return
 }
 
-// Read the value pointed to by the master catalog id.
-func (mcid *MasterCatalogId) ReadVal(lbase *Logbase) (val []byte, err error) {
-	mcr := lbase.mcat.index[mcid.id]
-	vloc, ok := mcr.(*ValueLocation)
-	if ok {return vloc.ReadVal(lbase)}
-	err = FmtErrBadType(
-			"The Master Catalog id %v points to another id %v, " +
-			"which is prohibited",
-			mcid, vloc)
-	return nil, err
+// Read the value pointed to by the Value.
+func (val *Value) ReadVal(lbase *Logbase) ([]byte, LBTYPE, error) {
+	return val.vbyts, val.vtype, nil
 }
 
 // Byte packing functions.
@@ -797,7 +818,7 @@ func PackZapRecord(key interface{}, zrecs []*ZapRecord, debug *DebugLogger) []by
 // Return a byte slice with a ValueLocation packed ready for file writing.
 func (vloc *ValueLocation) Pack(key interface{}, debug *DebugLogger) []byte {
 	bfr := new(bytes.Buffer)
-	byts := PackCommonMasterCatalogRecord(key, debug)
+	byts := PackKey(key, debug)
 	bfr.Write(byts)
 	binary.Write(bfr, BIGEND, LBTYPE_VALOC)
 	binary.Write(bfr, BIGEND, vloc.fnum)
@@ -806,17 +827,7 @@ func (vloc *ValueLocation) Pack(key interface{}, debug *DebugLogger) []byte {
 	return bfr.Bytes()
 }
 
-// Return a byte slice with a MasterCatalogId packed ready for file writing.
-func (mcid *MasterCatalogId) Pack(key interface{}, debug *DebugLogger) []byte {
-	bfr := new(bytes.Buffer)
-	byts := PackCommonMasterCatalogRecord(key, debug)
-	bfr.Write(byts)
-	binary.Write(bfr, BIGEND, LBTYPE_MCID)
-	binary.Write(bfr, BIGEND, mcid.id)
-	return bfr.Bytes()
-}
-
-func PackCommonMasterCatalogRecord(key interface{}, debug *DebugLogger) []byte {
+func PackKey(key interface{}, debug *DebugLogger) []byte {
 	bfr := new(bytes.Buffer)
 	kbyts := InjectKeyType(key, debug)
 	ksz := AsLBUINT(len(kbyts))
@@ -868,16 +879,12 @@ func (vloc *ValueLocation) ToRecordLocation(ksz LBUINT) *RecordLocation {
 	return rloc
 }
 
-func (mcid *MasterCatalogId) ToRecordLocation(ksz LBUINT) *RecordLocation {
-	return nil
-}
-
 // Zapping.
 
-// Return the number of whole buffers that divide the chunk, and any remainder.
-func DivideChunkByBuffer(chunksize, buffersize LBUINT) (n, rem LBUINT) {
-	n = chunksize / buffersize
-	rem = chunksize - n * buffersize
+// LBUINT division.
+func Divide(dividend, divisor LBUINT) (q, rem LBUINT) {
+	q = dividend / divisor
+	rem = dividend % divisor
 	return
 }
 

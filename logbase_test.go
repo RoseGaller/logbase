@@ -47,8 +47,8 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 	saveRetrieveKeyValue(k[pair], v[pair], t)
 	mcr[2] = lbase.mcat.Get(k[pair])
 	//dumpIndex(lbase.livelog.indexfile)
-	dumpMaster()
-	dumpZapmap()
+	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpZapmap(lbase)
 	err := lbase.Save()
 	if err != nil {
 		t.Fatalf("Problem saving logbase: %s", err)
@@ -58,10 +58,10 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 		t.Fatalf("The zapmap should contain precisely 2 entries")
 	}
 	zrec0 := NewZapRecord()
-	vloc0 := mcr[0].(*ValueLocation)
+	vloc0 := mcr[0].ToValueLocation()
 	zrec0.FromValueLocation(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), vloc0)
 	zrec1 := NewZapRecord()
-	vloc1 := mcr[1].(*ValueLocation)
+	vloc1 := mcr[1].ToValueLocation()
 	zrec1.FromValueLocation(AsLBUINT(len(k[pair]) + LBTYPE_SIZE), vloc1)
 	matches := zrec0.Equals(zrecs[0]) && zrec1.Equals(zrecs[1])
 	if !matches {
@@ -82,8 +82,8 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 	lbase.mcat = NewMasterCatalog()
 	lbase.zmap = NewZapmap()
 	lbase.Init(user, passhash)
-	dumpMaster()
-	dumpZapmap()
+	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpZapmap(lbase)
 	if len(lbase.mcat.index) != len(mc.index) {
 		t.Fatalf(
 			"The loaded master file should have %d entries, but has %d",
@@ -97,9 +97,6 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 			len(lbase.zmap.zapmap))
 	}
 	for key, mcr := range mc.index {
-		lbase.debug.Check("key = %v", key)
-		lbase.debug.Check("mcr = %v", mcr)
-		lbase.debug.Check("lbase.mcat.index[key] = %v", lbase.mcat.Get(key))
 		if !mcr.Equals(lbase.mcat.Get(key)) {
 		    t.Fatalf(
 				"The saved and loaded master file entry for key %q should " +
@@ -136,8 +133,8 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
 	lbase.mcat = NewMasterCatalog()
 	lbase.zmap = NewZapmap()
 	lbase.Init(user, passhash)
-	dumpMaster()
-	dumpZapmap()
+	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpZapmap(lbase)
 	if len(lbase.mcat.index) != len(mc.index) {
 		t.Fatalf(
 			"The loaded master file should have %d entries, but has %d",
@@ -296,26 +293,6 @@ func dumpIndex(ifile *Indexfile) {
 	}
 }
 
-// Dump contents of the (internal) master catalog.
-func dumpMaster() {
-	lbase.debug.Fine("Master catalog records:")
-	for key, mcr := range lbase.mcat.index {
-		lbase.debug.Fine("%q %s", key, mcr.String())
-	}
-}
-
-// Dump contents of the internal zapmap.
-func dumpZapmap() {
-	lbase.debug.Fine("Zapmap records:")
-	for key, zrecs := range lbase.zmap.zapmap {
-		var line string = ""
-		for _, zrec := range zrecs {
-			line += zrec.String()
-		}
-		lbase.debug.Fine("%q {%s}", key, line)
-	}
-}
-
 func dumpLogfiles() {
 	_, fnums, err := lbase.GetLogfilePaths()
 	if err != nil {WrapError("Could not get logfile paths", err).Fatal()}
@@ -325,7 +302,6 @@ func dumpLogfiles() {
 		lbase.debug.Fine("Logfile records for %s:", lfile.abspath)
 		lrecs, err2 := lfile.Load()
 		if err2 != nil {WrapError("Could not get logfile", err2).Fatal()}
-		lbase.debug.Check("len=%v",len(lrecs))
 		for _, lrec := range lrecs {
 			lbase.debug.Fine(" %s", lrec.String())
 		}

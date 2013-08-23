@@ -26,11 +26,13 @@
 	OPTION 2
 	API example (LB+ means added as k-v pair to logbase)
 
-	colour := NewKind("Colour", nil)
+	colour := NewKind("Colour")
+	// Doesn't exist, MCID_MIN = 10
+	// LB+ LBTYPE_MCIDS(10) -> LBTYPE_MCK("Colour")
+	// LB+ "Colour" -> LBTYPE_MCIDSET(10)
+	colour.Parent = GetKind(
     green := NewDoc("Colour", "green")
 	green.Save()
-	// LB+ LBTYPE_MCID(1) -> LBTYPE_MCK("/Colour/green")
-	// LB+ "/Colour/green" -> LBTYPE_MCID(1)
 
 	thing := NewKind("Thing", nil)
 	animal := NewKind("Animal", thing)
@@ -39,28 +41,29 @@
 	frog.SetField("eyes", uint8(2))
 	frog.SetField("colour", green)
 	frog.Save()
-	// LB+ LBTYPE_MCID(2) -> LBTYPE_MCK("/Thing/Animal/")
-	// LB+ "/Thing/Animal/" -> LBTYPE_MCID(2)
-	// LB+ LBTYPE_MCID(3) -> LBTYPE_DOC(LBTYPE_MCK("Thing/Animal/frog"),LBTYPE_MAP("colour":LBTYPE_MCID(1),"eyes":LBTYPE_UINT8(2)))
-	// LB+ "/Thing/Animal/frog" -> LBTYPE_MCID(3)
+	// LB+ LBTYPE_MCIDS(2) -> LBTYPE_MCK("/Thing/Animal/")
+	// LB+ "/Thing/Animal/" -> LBTYPE_MCIDS(2)
+	// LB+ LBTYPE_MCIDS(3) -> VALOC -> LBTYPE_DOC(LBTYPE_MCK("Thing/Animal/frog"),LBTYPE_MAP("colour":LBTYPE_MCIDS(1),"eyes":LBTYPE_UINT8(2)))
+	// LB+ "/Thing/Animal/frog" -> LBTYPE_MCIDS(3)
 
 	f1 := GetDoc(animal, "frog") // Finds "/Thing/Animal/frog" and retrieves each field into struct
 */
 package logbase
 
 import (
-	//"sync"
-	//"strings"
+	"fmt"
+	"bufio"
+	"encoding/binary"
+	"bytes"
 )
 
-var NextMCID MCID_TYPE = MinMCID // A global Master catalog record id counter
-const MinMCID MCID_TYPE = 10 // Allow space for any special records
+var nextMCID MCID_TYPE = MCID_MIN // A global Master catalog record id counter
+const MCID_MIN MCID_TYPE = 10 // Allow space for any special records
 
-// A Kind is identified by a path much like a directory in a file system.  In
-// same way, multiple paths can lead to the same Kind, allowing multiple
-// inheritance of schema.
+// A Kind is the heart of a future schema infrastructure.
 type Kind struct {
-	mcid	[]MCID_TYPE
+	name		string
+	parents		*MasterCatalogIdSet
 }
 
 type Field struct {
@@ -78,21 +81,130 @@ type Document struct {
 	*FieldMap
 }
 
-////
-//func (lbase *Logbase) FindKind(name string) []MCID_TYPE {
-//	kind := name + "/"
-//	for k := range lbase.mcat.index {
-//		switch k.(type) {
-//		case string:
-//			if strings.HasSuffix(k, kind) {
-//				v := lbase.mcat.index[k]
-//				switch v.(type) {
-//				case MCID_TYPE 
-//				}
-//			}
-//		}
-//	}
-//	return &Kind{name, parent}
+type MasterCatalogId struct {
+	id		MCID_TYPE
+}
+
+func NewMasterCatalogId() *MasterCatalogId {
+	return &MasterCatalogId{}
+}
+
+type MasterCatalogIdSet struct {
+	set		[]MCID_TYPE // Ordered list, with the 0th item the identity
+}
+
+func NewMasterCatalogIdSet() *MasterCatalogIdSet {
+	return &MasterCatalogIdSet{}
+}
+
+// Compare for equality against another MasterCatalogId.
+func (mcid *MasterCatalogId) Equals(other *MasterCatalogId) bool {
+	if other == nil {return false}
+	return (mcid.id == other.id)
+}
+
+// Compare for equality against another MasterCatalogIdSet.
+func (mcidset *MasterCatalogIdSet) Equals(other *MasterCatalogIdSet) bool {
+	if other == nil {return false}
+	if len(mcidset.set) != len(other.set) {return false}
+	result := false
+	for i, id := range mcidset.set {
+		result = result && (id == other.set[i])
+	}
+	return result
+}
+
+// Return string representation of a MasterCatalogId.
+func (mcid *MasterCatalogId) String() string {
+	return fmt.Sprintf("%d", mcid.id)
+}
+
+// Return string representation of a MasterCatalogIdSet.
+func (mcidset *MasterCatalogIdSet) String() string {
+	result := "("
+	for i, id := range mcidset.set {
+		if i > 0 {result += ","}
+		result += fmt.Sprintf("%d", id)
+	}
+	return result + ")"
+}
+
+// Read the value pointed to by the MasterCatalogId.
+func (mcid *MasterCatalogId) ReadVal(lbase *Logbase) ([]byte, LBTYPE, error) {
+	mcr := lbase.mcat.index[mcid.id]
+	vloc, ok := mcr.(*ValueLocation)
+	if ok {return vloc.ReadVal(lbase)}
+	err := FmtErrBadType(
+			"The Master Catalog id %v points to another id %v, " +
+			"which is prohibited",
+			mcid.id, vloc)
+	return nil, LBTYPE_NIL, err
+}
+
+// Return a byte slice with a MasterCatalogId packed ready for file writing.
+func (mcid *MasterCatalogId) Pack(key interface{}, debug *DebugLogger) []byte {
+	bfr := new(bytes.Buffer)
+	byts := PackKey(key, debug)
+	bfr.Write(byts)
+	binary.Write(bfr, BIGEND, LBTYPE_MCID)
+	binary.Write(bfr, BIGEND, mcid.id)
+	return bfr.Bytes()
+}
+
+// Return a byte slice with a MasterCatalogIdSet packed ready for file writing.
+func (mcidset *MasterCatalogIdSet) Pack(debug *DebugLogger) []byte {
+	bfr := new(bytes.Buffer)
+	binary.Write(bfr, BIGEND, LBTYPE_MCID_SET)
+	for _, id := range mcidset.set {
+		binary.Write(bfr, BIGEND, id)
+	}
+	return bfr.Bytes()
+}
+
+// Kind.
+
+
+func (lbase *Logbase) NewKind(name string) (kind *Kind, err error) {
+	vbyts, vtype, err := lbase.Get(name)
+	if err != nil {return}
+	if vbyts == nil {
+		v := InjectType([]byte(name), LBTYPE_MCK)
+		id := GetNextMCID()
+		lbase.Put(id, v, LBTYPE_MCK)
+		kind = &Kind{name, &MasterCatalogIdSet{[]MCID_TYPE{id}}}
+		kind.Put(lbase)
+	} else {
+		if vtype != LBTYPE_MCID_SET {
+			err = lbase.debug.Error(FmtErrBadType(
+				"Found record in logbase %s for kind %q with type %v, but should be %v",
+				lbase.name, name, vtype, LBTYPE_MCID_SET))
+			return
+		}
+		rem := len(vbyts) % int(MCID_TYPE_SIZE)
+		if rem > 0 {
+			err = lbase.debug.Error(ErrDataSize(
+				"The MCID set for kind %q in logbase %s has length %d which is not a " +
+				"multiple of the MCID type size of %d",
+				name, lbase.name, len(vbyts), MCID_TYPE_SIZE))
+			return
+		}
+		n := len(vbyts) / int(MCID_TYPE_SIZE)
+		kind = &Kind{name, &MasterCatalogIdSet{make([]MCID_TYPE, n)}}
+		bfr := bufio.NewReader(bytes.NewBuffer(vbyts))
+		for i := 0; i < n; i++ {
+			binary.Read(bfr, BIGEND, &kind.parents.set[i])
+		}
+	}
+	return
+}
+
+func (kind *Kind) Put(lbase *Logbase) error {
+	_, err := lbase.Put(kind.name, kind.parents.Pack(lbase.debug), LBTYPE_MCID_SET)
+	return err
+}
+
+//func (kind *Kind) AddParent(parent *Kind) {
+//
 //}
 
 func NewFieldMap() *FieldMap {
@@ -108,16 +220,6 @@ func NewDoc(kind *Kind, name string) *Document {
 		FieldMap: NewFieldMap(),
 	}
 }
-
-//func GetKindPath(name string, parent *Kind) string {
-//	var path string
-//	if parent == nil {
-//		path = "/" + name
-//	} else {
-//
-//	}
-//
-//}
 
 // Pack/unpack document to/from []byte value. 
 
@@ -142,15 +244,18 @@ func NewDoc(kind *Kind, name string) *Document {
 
 // Reset the next MCID to the minimum value.
 func ResetMCID() {
-	NextMCID = MinMCID
+	nextMCID = MCID_MIN
 	return
 }
 
 // Increment the MCID counter by one.
 func IncMCID() MCID_TYPE {
-	NextMCID = NextMCID + 1
-	return NextMCID
+	nextMCID = nextMCID + 1
+	return nextMCID
 }
+
+// Getter for next MCID counter value.
+func GetNextMCID() MCID_TYPE {return nextMCID}
 
 // Test whether the given key value is of type MCID_TYPE.
 func IsMCID(key interface{}) bool {

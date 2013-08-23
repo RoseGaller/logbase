@@ -149,6 +149,9 @@ type LogbaseConfiguration struct {
 	LOGFILE_NAME_EXTENSION  string // Postfix for binary data log file names
 	INDEXFILE_NAME_EXTENSION string // Postfix for binary "hint" file names
 	LOGFILE_MAXBYTES        int // Size of live log file before spawning a new one
+	// Usually the Master Catalog holds only value locations, but if the
+	// value is small enough, we can also keep it in RAM for speed 
+	MCAT_VALUE_MAXSIZE		int
 }
 
 // Default configuration in case file is absent.
@@ -157,6 +160,7 @@ func DefaultConfig() *LogbaseConfiguration {
 		LOGFILE_NAME_EXTENSION:     "logbase",
 		INDEXFILE_NAME_EXTENSION:   "index",
 		LOGFILE_MAXBYTES:           1048576, // 1 MB
+		MCAT_VALUE_MAXSIZE:         1024, // 1 KB
 	}
 }
 
@@ -265,7 +269,8 @@ func (lbase *Logbase) Init(user, passhash string) error {
 			}
 			if lbase.debug.Error(err) != nil {return err}
 			for _, irec := range lfindex.list {
-				lbase.UpdateValueLocation(irec, fnum)
+				key, vloc := lbase.UpdateZapmap(irec, fnum)
+				lbase.UpdateMasterCatalog(key, vloc)
 			}
 		}
 	}
@@ -287,9 +292,11 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 	//lbase.debug.SuperFine(
 	//	"Putting (%v,[%d]byte) into logbase %s",
 	//	key, len(val), lbase.name)
-	lbase.debug.Basic(
-		"Putting (%v,%v) into logbase %s",
-		key, val, lbase.name)
+	if lbase.debug.GetLevel() > DEBUGLEVEL_ADVISE {
+		lbase.debug.Basic(
+			"Putting (%v,%s) into logbase %s",
+			key, ValToString(val, vtype), lbase.name)
+	}
 
 	if lbase.HasLiveLog() {
 		lrec := MakeLogRecord(key, val, vtype, lbase.debug)
@@ -298,9 +305,24 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 			lbase.NewLiveLog()
 		}
 
+		// Store data immediately to file
 	    irec, err := lbase.livelog.StoreData(lrec)
 		if lbase.debug.Error(err) != nil {return nil, err}
-		mcr := lbase.UpdateValueLocation(irec, lbase.livelog.fnum)
+		// Schedule old data for zapping
+		_, vloc := lbase.UpdateZapmap(irec, lbase.livelog.fnum)
+
+		// Update Master Catalog in RAM with value or its location
+		storeValueInRAM := len(val) + LBTYPE_SIZE <= lbase.config.MCAT_VALUE_MAXSIZE
+		var mcr MasterCatalogRecord
+		if storeValueInRAM {
+			v := NewValue()
+			v.ValueLocation = vloc
+			v.vbyts = val
+			v.vtype = vtype
+			mcr = lbase.UpdateMasterCatalog(key, v)
+		} else {
+			mcr = lbase.UpdateMasterCatalog(key, vloc)
+		}
 		return mcr, nil
 	}
 	return nil, ErrFileNotFound("Live log file is not defined")
@@ -308,15 +330,14 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 
 // Retrieve the value for the given key.  Snips off the value type
 // prepend from the value bytes.
-func (lbase *Logbase) Get(key interface{}) (val []byte, vtype LBTYPE, err error) {
+func (lbase *Logbase) Get(key interface{}) (vbyts []byte, vtype LBTYPE, err error) {
 	mcr := lbase.mcat.Get(key)
 	if mcr == nil {
 		err = FmtErrKeyNotFound(key)
-		val = nil
+		vbyts = nil
 		vtype = LBTYPE_NIL
 	} else {
-		val, err = mcr.ReadVal(lbase)
-		val, vtype = SnipValueType(val, lbase.debug)
+		vbyts, vtype, err = mcr.ReadVal(lbase)
 	}
 
 	return
