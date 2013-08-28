@@ -25,7 +25,6 @@ const (
 	PERMISSION_RECORD
 )
 
-
 type FileDecodeConfig struct {
 	readDataValueSize	bool // Read a value size (GVS) after the key size (KS)?
 	snipValueType		bool // Snip LBTYPE value from the returned value bytes?
@@ -218,8 +217,8 @@ func NewRecordLocation() *RecordLocation {
 //  ValueLocation
 type MasterCatalogRecord interface {
 	Equals(other MasterCatalogRecord) bool
-	String()			string
-	ToValueLocation()	*ValueLocation
+	String() string
+	ToValueLocation() *ValueLocation
 	ReadVal(lbase *Logbase) (val []byte, vtype LBTYPE, err error)
 }
 
@@ -322,7 +321,8 @@ func NewUserPermissions(p *Permission) *UserPermissions {
 func (lbase *Logbase) UpdateZapmap(irec *IndexRecord, fnum LBUINT) (interface{}, *ValueLocation) {
 	newvloc := NewValueLocation()
 	newvloc.FromIndexRecord(irec, fnum)
-	key := GetKey(irec.kbyts, irec.ktype, lbase.debug)
+	key, err := MakeKey(irec.kbyts, irec.ktype, lbase.debug)
+	lbase.debug.Error(err)
 	old := lbase.mcat.Get(key)
 
 	if old != nil {
@@ -340,7 +340,7 @@ func (lbase *Logbase) UpdateZapmap(irec *IndexRecord, fnum LBUINT) (interface{},
 // Update the Master Catalog.
 func (lbase *Logbase) UpdateMasterCatalog(key interface{}, mcr MasterCatalogRecord) MasterCatalogRecord {
 	lbase.mcat.Put(key, mcr)
-	IncIfMCID(key)
+	SetNextMCID(key)
 	return mcr
 }
 
@@ -482,12 +482,10 @@ func InjectType(x []byte, typ LBTYPE) []byte {
 // Read the first bytes of the given byte slice to return the LBTYPE.
 func GetType(x []byte, debug *DebugLogger) (typ LBTYPE) {
 	if len(x) < LBTYPE_SIZE {
-		debug.Error(ErrDataSize(fmt.Sprintf(
-			"Data slice %v is too small to contain an " +
-			"LBTYPE which is of size %v", x, LBTYPE_SIZE)))
+		debug.Error(FmtErrSliceTooSmall(x, LBTYPE_SIZE))
 	}
 	bfr := bufio.NewReader(bytes.NewBuffer(x[:LBTYPE_SIZE]))
-	binary.Read(bfr, BIGEND, &typ)
+	debug.DecodeError(binary.Read(bfr, BIGEND, &typ))
 	return
 }
 
@@ -515,9 +513,9 @@ func SnipValueType(val []byte, debug *DebugLogger) (newval []byte, vtype LBTYPE)
 	return
 }
 
-func SnipKeyType(key []byte)  (newkey []byte, ktype LBTYPE) {
+func SnipKeyType(key []byte, debug *DebugLogger)  (newkey []byte, ktype LBTYPE) {
 	bfr := bufio.NewReader(bytes.NewBuffer(key[:LBTYPE_SIZE]))
-	binary.Read(bfr, BIGEND, &ktype)
+	debug.DecodeError(binary.Read(bfr, BIGEND, &ktype))
 	newkey	= key[LBTYPE_SIZE:]
 	return
 }
@@ -538,7 +536,7 @@ func (zrec *ZapRecord) FromValueLocation(ksz LBUINT, vloc *ValueLocation) {
 }
 
 // Map GenericRecord to a new LogRecord.
-func (rec *GenericRecord) ToLogRecord() *LogRecord {
+func (rec *GenericRecord) ToLogRecord(debug *DebugLogger) *LogRecord {
 	lrec := NewLogRecord()
 	lrec.ksz = rec.ksz
 	lrec.vsz = rec.vsz - CRC_SIZE
@@ -547,27 +545,28 @@ func (rec *GenericRecord) ToLogRecord() *LogRecord {
 	lrec.vtype = rec.vtype
 	// Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.vbyts))
-	lrec.vbyts = make([]byte, lrec.vsz) // must have fixed size
-	binary.Read(bfr, BIGEND, &lrec.vbyts)
-	binary.Read(bfr, BIGEND, &lrec.crc)
+	// Note that the generic vsz includes the LBTYPE prefix
+	lrec.vbyts = make([]byte, int(lrec.vsz) - LBTYPE_SIZE) // must have fixed size
+	debug.DecodeError(binary.Read(bfr, BIGEND, &lrec.vbyts))
+	debug.DecodeError(binary.Read(bfr, BIGEND, &lrec.crc))
 	return lrec
 }
 
 // Map GenericRecord to a new IndexRecord.
-func (rec *GenericRecord) ToIndexRecord() *IndexRecord {
+func (rec *GenericRecord) ToIndexRecord(debug *DebugLogger) *IndexRecord {
 	irec := NewIndexRecord()
 	irec.ksz = rec.ksz
 	irec.kbyts = rec.kbyts
 	irec.ktype = rec.ktype
 	// Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.vbyts))
-	binary.Read(bfr, BIGEND, &irec.vsz)
-	binary.Read(bfr, BIGEND, &irec.vpos)
+	debug.DecodeError(binary.Read(bfr, BIGEND, &irec.vsz))
+	debug.DecodeError(binary.Read(bfr, BIGEND, &irec.vpos))
 	return irec
 }
 
 // Map LogRecord to an IndexRecord.  Note vpos is left as nil.
-func (lrec *LogRecord) ToIndexRecord() *IndexRecord {
+func (lrec *LogRecord) ToIndexRecord(debug *DebugLogger) *IndexRecord {
 	irec := NewIndexRecord()
 	irec.ksz = lrec.ksz
 	irec.vsz = lrec.vsz
@@ -578,35 +577,38 @@ func (lrec *LogRecord) ToIndexRecord() *IndexRecord {
 
 // Map GenericRecord to a new MasterLogRecord.
 func (rec *GenericRecord) ToValueLocation(debug *DebugLogger) (interface{}, *ValueLocation) {
-	key := GetKey(rec.kbyts, rec.ktype, debug)
+	key, err := MakeKey(rec.kbyts, rec.ktype, debug)
+	debug.Error(err)
 	vbyts, _ := rec.GetValueAndType(MASTER_RECORD, debug)
 	vloc := NewValueLocation()
 	// Unpack
 	bfr := bufio.NewReader(bytes.NewBuffer(vbyts))
-	binary.Read(bfr, BIGEND, &vloc.fnum)
-	binary.Read(bfr, BIGEND, &vloc.vsz)
-	binary.Read(bfr, BIGEND, &vloc.vpos)
+	debug.DecodeError(binary.Read(bfr, BIGEND, &vloc.fnum))
+	debug.DecodeError(binary.Read(bfr, BIGEND, &vloc.vsz))
+	debug.DecodeError(binary.Read(bfr, BIGEND, &vloc.vpos))
 	return key, vloc
 }
 
 // Map GenericRecord to a new ZapRecord list.
 func (rec *GenericRecord) ToZapRecordList(debug *DebugLogger) (interface{}, []*ZapRecord) {
-	key := GetKey(rec.kbyts, rec.ktype, debug)
+	key, err := MakeKey(rec.kbyts, rec.ktype, debug)
+	debug.Error(err)
 	n := rec.LocationListLength()
 	bfr := bufio.NewReader(bytes.NewBuffer(rec.vbyts))
 	var zrecs = make([]*ZapRecord, n)
 	for i := 0; i < n; i++ {
 		zrecs[i] = NewZapRecord()
-	    binary.Read(bfr, BIGEND, &zrecs[i].fnum)
-	    binary.Read(bfr, BIGEND, &zrecs[i].rsz)
-	    binary.Read(bfr, BIGEND, &zrecs[i].rpos)
+	    debug.DecodeError(binary.Read(bfr, BIGEND, &zrecs[i].fnum))
+	    debug.DecodeError(binary.Read(bfr, BIGEND, &zrecs[i].rsz))
+	    debug.DecodeError(binary.Read(bfr, BIGEND, &zrecs[i].rpos))
 	}
 	return key, zrecs
 }
 
 // Map GenericRecord to a new UserPermissionRecord.
 func (rec *GenericRecord) ToUserPermissionRecord(debug *DebugLogger) (interface{}, *UserPermissionRecord) {
-	key := GetKey(rec.kbyts, rec.ktype, debug)
+	key, err := MakeKey(rec.kbyts, rec.ktype, debug)
+	debug.Error(err)
 	upr := NewUserPermissionRecord()
 	// Unpack
 	var p uint8 = uint8(rec.vbyts[0])
@@ -614,7 +616,6 @@ func (rec *GenericRecord) ToUserPermissionRecord(debug *DebugLogger) (interface{
 	upr.Read = PERMISSION_READ == (p & PERMISSION_READ)
 	upr.Update = PERMISSION_UPDATE == (p & PERMISSION_UPDATE)
 	upr.Delete = PERMISSION_DELETE == (p & PERMISSION_DELETE)
-	fmt.Printf("CHECK key=%v upr=%v\n", key, upr)
 	return key, upr
 }
 
@@ -689,18 +690,10 @@ func (vloc *ValueLocation) String() string {
 // Return string representation of a Value.
 func (val *Value) String() string {
 	return fmt.Sprintf(
-		"(vtype=%d vbyts=%s %s)",
+		"(vtype=%d val=%s %s)",
 		val.vtype,
-		ValToString(val.vbyts, val.vtype),
+		ValBytesToString(val.vbyts, val.vtype),
 		val.ValueLocation.String())
-}
-
-func ValToString(val []byte, vtype LBTYPE) string {
-	if IsStringType(vtype) {
-		return fmt.Sprintf("%q", string(val))
-	} else {
-        return fmt.Sprintf("[%d]bytes", len(val))
-	}
 }
 
 // Return string representation of a ZapRecord.
@@ -720,13 +713,7 @@ func (i LBUINT) Plus(other int) LBUINT {
 }
 
 func AsLBUINT(num int) LBUINT {
-	if !CanMakeLBUINT(int64(num)) {
-		msg := fmt.Sprintf(
-			"The number %d does not fit within " +
-			"[0, LBUINT_MAX] = [0, %d]",
-			num, LBUINT_MAX)
-		ErrIntMismatch(msg).Fatal()
-	}
+	if !CanMakeLBUINT(int64(num)) {FmtErrOutsideRange(num, LBUINT_MAX).Fatal()}
 	return LBUINT(num)
 }
 

@@ -97,7 +97,7 @@ func NewServer() *Server {
 	return &Server{
 		id:         GenerateRandomHexStrings(1, SERVER_ID_LENGTH, SERVER_ID_LENGTH)[0],
 		logbases:   make(map[string]*Logbase),
-		Debug:      ScreenFileLogger(DEBUG_FILENAME),
+		Debug:      MakeScreenFileLogger(DEBUG_FILENAME),
 		shutdown:	false,
 	}
 }

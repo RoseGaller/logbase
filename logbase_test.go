@@ -10,6 +10,7 @@ import (
 const (
 	lbname = "test"
 	logfile_maxbytes = 100
+	//debug_level = "SUPERFINE"
 	debug_level = "BASIC"
 	user = "admin"
 	passhash = "root" // Not the actual hash in this case
@@ -71,14 +72,64 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 			zrecs[0],
 			zrecs[1])
 	}
+}
 
-	mc = lbase.mcat
-	zm = lbase.zmap
+// Create some Kinds.
+func TestBrandNewKinds(t *testing.T) {
+	colour, _, err := lbase.Kind("Colour")
+	if err != nil {
+		t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)
+	}
+	green, _, err := lbase.Kind("Green")
+	if err != nil {
+		t.Fatalf("Problem creating kind %q: %s", green.Name(), err)
+	}
+	green.OfKind(colour)
+	err = colour.Save(lbase)
+	if err != nil {
+		t.Fatalf("Problem saving kind %q: %s", colour.Name(), err)
+	}
+	err = green.Save(lbase)
+	if err != nil {
+		t.Fatalf("Problem saving kind %q: %s", green.Name(), err)
+	}
+}
+
+// Create a Document.
+func TestBrandNewDoc(t *testing.T) {
+	animal, _, err := lbase.Kind("Animal")
+	if err != nil {
+		t.Fatalf("Problem creating kind %q: %s", animal.Name(), err)
+	}
+	frog, _, err := lbase.Doc("frog")
+	if err != nil {
+		t.Fatalf("Problem creating doc %q: %s", frog.Name(), err)
+	}
+
+	frog.OfKind(animal)
+	err = animal.Save(lbase)
+	if err != nil {
+		t.Fatalf("Problem saving kind %q: %s", animal.Name(), err)
+	}
+
+	frog.SetFieldWithType("eyes", uint8(2), LBTYPE_UINT8)
+
+	err = frog.Save(lbase)
+	if err != nil {
+		t.Fatalf("Problem saving doc %q: %s", frog.Name(), err)
+	}
+	lbase.debug.DumpMasterCatalog(lbase)
 }
 
 // Re-initialise the logbase and ensure that the master catalog and zapmap are
 // properly loaded.
 func TestLoadMasterAndZapmap(t *testing.T) {
+	err := lbase.Save()
+	if err != nil {
+		t.Fatalf("Problem saving logbase: %s", err)
+	}
+	mc = lbase.mcat
+	zm = lbase.zmap
 	lbase.mcat = NewMasterCatalog()
 	lbase.zmap = NewZapmap()
 	lbase.Init(user, passhash)
@@ -99,8 +150,8 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 	for key, mcr := range mc.index {
 		if !mcr.Equals(lbase.mcat.Get(key)) {
 		    t.Fatalf(
-				"The saved and loaded master file entry for key %q should " +
-				"be %s but is %s",
+				"The saved and loaded master file entry for key %v should " +
+				"be %s but is %v",
 				key,
 				mcr,
 				lbase.mcat.Get(key))
@@ -254,6 +305,38 @@ func TestZap(t *testing.T) {
 	}
 }
 
+// Verify integrity of kinds following init cycling.
+func TestLoadedKinds(t *testing.T) {
+	colour, exists, err := lbase.Kind("Colour")
+	if err != nil {
+		t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)
+	}
+	if !exists {
+		t.Fatalf("The kind %q was not found", colour.Name())
+	}
+	if colour.MCID().id != MCID_MIN {
+		t.Fatalf("The kind %q should have MCID %v but instead has %v",
+			colour.Name(), MCID_MIN, colour.MCID())
+	}
+
+	lbase.debug.Check("colour = %v", colour)
+
+	green, exists, err := lbase.Kind("Green")
+	if err != nil {
+		t.Fatalf("Problem creating kind %q: %s", green.Name(), err)
+	}
+	if !exists {
+		t.Fatalf("The kind %q was not found", green.Name())
+	}
+
+	lbase.debug.Check("green = %v", green)
+
+	if !green.HasParent(colour) {
+		t.Fatalf("Kind %q should have kind %q as a parent", green.Name(), colour.Name())
+	}
+
+}
+
 // SUPPORT FUNCTIONS ==========================================================
 
 // Set up the global test logbase.
@@ -262,7 +345,7 @@ func setupLogbase() (lb *Logbase) {
 	lbtest = filepath.Join(cwd, lbname)
 	err := os.RemoveAll(lbtest)
 	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
-	lb = MakeLogbase(lbtest, ScreenLogger().SetLevel(debug_level))
+	lb = MakeLogbase(lbtest, ScreenLogger.SetLevel(debug_level))
 	err = lb.Init(user, passhash)
 	if err != nil {
 		WrapError("Could not create test logbase", err).Fatal()

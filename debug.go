@@ -99,8 +99,10 @@ func (debug *DebugLogger) GetLevel() int {
 
 // Loggers
 
+var ScreenLogger *DebugLogger = MakeScreenLogger()
+
 // Return a default DebugLogger writing to the screen and a file.
-func ScreenFileLogger(fname string) *DebugLogger{
+func MakeScreenFileLogger(fname string) *DebugLogger{
 	writers := []io.Writer{
 			   os.Stdout,
 			   FileDebugWriter(fname)}
@@ -108,13 +110,13 @@ func ScreenFileLogger(fname string) *DebugLogger{
 }
 
 // Return a default DebugLogger writing to the screen only.
-func ScreenLogger() *DebugLogger{
+func MakeScreenLogger() *DebugLogger{
 	writers := []io.Writer{os.Stdout}
 	return MakeLogger(writers)
 }
 
 // Return a DebugLogger with no writers.
-func NilLogger() *DebugLogger{
+func MakeNilLogger() *DebugLogger{
 	writers := []io.Writer{}
 	return MakeLogger(writers)
 }
@@ -132,7 +134,7 @@ func FileDebugWriter(fname string) io.Writer {
 func MakeLogger(writers []io.Writer) *DebugLogger {
 	level := DebugLevels["BASIC"]
 	debug := NewDebugLogger(level, writers)
-	debug.Advise("Debug logger started")
+	debug.Fine("Debug logger started")
 	return debug
 }
 
@@ -247,6 +249,14 @@ func (debug *DebugLogger) Error(err error) error {
 	return err
 }
 
+// Permit bypassing of error checking for frequently occuring binary decoding.
+func (debug *DebugLogger) DecodeError(err error) error {
+	if err != nil {
+		debug.messageHandler(DEBUG_FULL, "DECODE_ERROR", err.Error())
+	}
+	return err
+}
+
 // Checkpoint a location in the code.
 func (debug *DebugLogger) Check(msg string, a ...interface{}) *DebugLogger {
 	return debug.messageHandler(DEBUG_PART, "CHECKPOINT", msg, a...)
@@ -281,7 +291,7 @@ func FmtHexString(b []byte) string {
 func (debug *DebugLogger) DumpMasterCatalog(lbase *Logbase) {
 	debug.Advise("Master catalog records:")
 	for key, mcr := range lbase.mcat.index {
-		debug.Advise("%q %s", key, mcr.String())
+		debug.Advise("%v %s", key, mcr.String())
 	}
 }
 

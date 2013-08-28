@@ -354,7 +354,7 @@ func (lfile *Logfile) Index() (*Index, error) {
 	index := new(Index)
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			irec := rec.ToLogRecord().ToIndexRecord()
+			irec := rec.ToLogRecord(lfile.debug).ToIndexRecord(lfile.debug)
 			index.list = append(index.list, irec)
 		}
 		return nil
@@ -369,7 +369,7 @@ func (lfile *Logfile) Load() ([]*LogRecord, error) {
 	var lrecs []*LogRecord
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			lrec := rec.ToLogRecord()
+			lrec := rec.ToLogRecord(lfile.debug)
 			lrecs = append(lrecs, lrec)
 		}
 		return nil
@@ -391,7 +391,7 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
 	if err != nil {return}
 
 	// Create a new file index record
-	irec = lrec.ToIndexRecord()
+	irec = lrec.ToIndexRecord(lfile.debug)
 	hsz := LBUINT(ParamSize(lrec.ksz) + ParamSize(lrec.vsz))
 	irec.vpos = pos + hsz + irec.ksz
 
@@ -524,7 +524,7 @@ func (ifile *Indexfile) Load() (lfindex *Index, err error) {
 	lfindex = new(Index)
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			irec := rec.ToIndexRecord()
+			irec := rec.ToIndexRecord(ifile.debug)
 			lfindex.list = append(lfindex.list, irec)
 		}
 		return nil
@@ -601,7 +601,7 @@ func (mcat *MasterCatalog) Load(debug *DebugLogger) (err error) {
 		if rec.ksz > 0 {
 			key, vloc := rec.ToValueLocation(debug)
 			mcat.index[key] = vloc // Don't need to use gateway because mcat is fresh
-			IncIfMCID(key) // Increment the NextMCI if necessary 
+			SetNextMCID(key) // Increment the NextMCI if necessary 
 		}
 		return nil
 	}
@@ -610,7 +610,8 @@ func (mcat *MasterCatalog) Load(debug *DebugLogger) (err error) {
 	return
 }
 
-// Write master catalog file.
+// Write master catalog file.  Even though the catalog can contain values in RAM,
+// we only write the value locations to file.
 func (mcat *MasterCatalog) Save(debug *DebugLogger) (err error) {
 	mcat.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int

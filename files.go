@@ -291,7 +291,7 @@ func (file *File) ReadRecord(pos LBUINT, rectype int, readDataVal bool) (rec *Ge
 
 	// Key
 	kbyts, err := file.LockedReadAt(pos, rec.ksz, "key")
-	key, ktype := SnipKeyType(kbyts)
+	key, ktype := SnipKeyType(kbyts, file.debug)
 	rec.kbyts = key
 	rec.ktype = ktype
 	if err != nil {return}
@@ -334,7 +334,7 @@ func (file *File) ReadIntoParam(pos, size LBUINT, data interface{}, desc string)
 	b, err := file.LockedReadAt(pos, size, desc)
 	if err != nil {return}
 	bfr := bytes.NewBuffer(b)
-	err = binary.Read(bfr, binary.BigEndian, data)
+	err = file.debug.Error(binary.Read(bfr, binary.BigEndian, data))
 	return
 }
 
@@ -355,7 +355,7 @@ func (file *File) LockedReadAt(pos, size LBUINT, desc string) (byts []byte, err 
 	if err != nil {return}
 
 	if LBUINT(nr) != size {
-		err = FmtErrDataSize(desc, file.abspath, size, nr)
+		err = FmtErrReadSize(desc, file.abspath, size, nr)
 	}
 	return
 }

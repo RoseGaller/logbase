@@ -15,6 +15,8 @@ type AppError struct {
 	tag         string
 }
 
+const DEFAULT_JUMPS int = 3
+
 // Print message to stdout and terminate app.
 func (err *AppError) Fatal()  {
 	fmt.Println("LOGBASE FATAL ERROR")
@@ -25,8 +27,8 @@ func (err *AppError) Fatal()  {
 // Make an AppError, capturing the callers details.
 // Deliberately private function, to fix the number of jumps
 // from the caller.
-func makeAppError() *AppError {
-	return &AppError{caller: CaptureCaller(3)}
+func makeAppError(jump int) *AppError {
+	return &AppError{caller: CaptureCaller(DEFAULT_JUMPS + jump)}
 }
 
 // Produce a string to satisfy error interface.
@@ -51,121 +53,160 @@ func (err *AppError) Describe(msg, tag string) *AppError {
 }
 
 func WrapError(msg string, in error) *AppError {
-	return makeAppError().Describe(msg + ": " + in.Error(), "wrapped_error")
+	return makeAppError(0).Describe(msg + ": " + in.Error(), "wrapped_error")
 }
 
 // Uncategorised.
 
 func ErrNew(msg string) *AppError {
-	return makeAppError().Describe(msg, "uncategorised")
+	return makeAppError(0).Describe(msg, "uncategorised")
 }
 
 // Int mismatch.
 
-func FmtErrIntMismatch(num64 int64, path string, byA string, num int) *AppError {
-	return ErrIntMismatch(fmt.Sprintf(
-		"The index %d extracted from log file %q cannot be " +
-		"properly represented by a %s, result is %d.",
-		num64, path, byA, num))
+func FmtErrOutsideRange(num int, max int64) *AppError {
+	return errIntMismatch(fmt.Sprintf(
+		"The number %d does not fit within " +
+		"[0, LBUINT_MAX] = [0, %d]",
+		num, max), 1)
 }
 
-func ErrIntMismatch(msg string) *AppError {
-	return makeAppError().Describe(msg, "int_mismatch")
+func FmtErrIntMismatch(num64 int64, path string, byA string, num int) *AppError {
+	return errIntMismatch(fmt.Sprintf(
+		"The index %d extracted from log file %q cannot be " +
+		"properly represented by a %s, result is %d.",
+		num64, path, byA, num), 1)
+}
+
+func errIntMismatch(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "int_mismatch")
+}
+
+// Key mismatch.
+
+func FmtErrKeyMismatch(msg string, a ...interface{}) *AppError {
+	return errKeyMismatch(fmt.Sprintf(msg, a...), 1)
+}
+
+func errKeyMismatch(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "key_mismatch")
 }
 
 // Key not found.
 
 func FmtErrKeyNotFound(key interface{}) *AppError {
-	return ErrKeyNotFound(fmt.Sprintf("Key %v not found.", key))
+	return errKeyNotFound(fmt.Sprintf("Key %v not found.", key), 1)
 }
 
-func ErrKeyNotFound(msg string) *AppError {
-	return makeAppError().Describe(msg, "key_not_found")
+func errKeyNotFound(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "key_not_found")
 }
 
 // Key collision.
 
 func FmtErrKeyExists(keystr string) *AppError {
-	return ErrKeyExists(fmt.Sprintf("Key %q already exists.", keystr))
+	return errKeyExists(fmt.Sprintf("Key %q already exists.", keystr), 1)
 }
 
-func ErrKeyExists(msg string) *AppError {
-	return makeAppError().Describe(msg, "key_exists")
+func errKeyExists(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "key_exists")
 }
 
 // Value not found.
 
 func FmtErrValNotFound(valstr string) *AppError {
-	return ErrValNotFound(fmt.Sprintf("Value %q not found.", valstr))
+	return errValNotFound(fmt.Sprintf("Value %q not found.", valstr), 1)
 }
 
-func ErrValNotFound(msg string) *AppError {
-	return makeAppError().Describe(msg, "value_not_found")
+func errValNotFound(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "value_not_found")
 }
 
 // File not found.
 
-func FmtErrFileNotFound(path string) *AppError {
-	return ErrFileNotFound(fmt.Sprintf("File %q not found.", path))
+func FmtErrLiveLogUndefined() *AppError {
+	return errFileNotFound("Live log has not been defined", 1)
 }
 
-func ErrFileNotFound(msg string) *AppError {
-	return makeAppError().Describe(msg, "file_not_found")
+func FmtErrFileNotFound(path string) *AppError {
+	return errFileNotFound(fmt.Sprintf("File %q not found.", path), 1)
+}
+
+func errFileNotFound(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "file_not_found")
 }
 
 // Bad argument.
 
 func FmtErrBadArgs(msg string, a ...interface{}) *AppError {
-	return ErrBadArgs(fmt.Sprintf(msg, a...))
+	return errBadArgs(fmt.Sprintf(msg, a...), 1)
 }
 
-func ErrBadArgs(msg string) *AppError {
-	return makeAppError().Describe(msg, "bad_arguments")
+func errBadArgs(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "bad_arguments")
 }
 
 // Bad type.
 
 func FmtErrBadType(msg string, a ...interface{}) *AppError {
-	return ErrBadType(fmt.Sprintf(msg, a...))
+	return errBadType(fmt.Sprintf(msg, a...), 1)
 }
 
-func ErrBadType(msg string) *AppError {
-	return makeAppError().Describe(msg, "bad_type")
+func errBadType(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "bad_type")
 }
 
 // Unexpected data size.
 
-func FmtErrDataSize(desc, path string, size LBUINT, nread int) *AppError {
-	return ErrDataSize(
+func FmtErrSliceTooSmall(slice []byte, size int) *AppError {
+	return fmtErrDataSize(
+		"Data slice %v is too small to contain an " +
+		"LBTYPE which is of size %v",
+		slice, size)
+}
+
+func FmtErrReadSize(desc, path string, size LBUINT, nread int) *AppError {
+	return fmtErrDataSize(
 		"Invalid %s size while reading record for file %q. " +
 		"Expected %d got %d bytes.",
 		desc, path, size, nread)
 }
 
 func FmtErrPositionExceedsFileSize(path string, pos, size int) *AppError {
-	return ErrDataSize(
+	return fmtErrDataSize(
 		"The position %d for file %q exceeds the file size %d.",
 		pos, path, size)
 }
 
+func FmtErrPartialMCIDSet(size, divisor int) *AppError {
+	return fmtErrDataSize(
+		"The MCID set has byte length %d which is " +
+		"not a multiple of the MCID type size of %d",
+		size, divisor)
+}
+
 func FmtErrPartialLocationData(size, nread LBUINT) *AppError {
-	return ErrDataSize(
+	return fmtErrDataSize(
 		"A ValueLocationRecord has %d bytes but the GenericRecord read " +
 		"%d bytes, so some data must be missing.",
 		size, nread)
 }
 
-func ErrDataSize(msg string, a ...interface{}) *AppError {
-	return makeAppError().Describe(msg, "unexpected_data_size")
+func fmtErrDataSize(msg string, a ...interface{}) *AppError {
+	return errDataSize(fmt.Sprintf(msg, a...), 2)
+}
+
+func errDataSize(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "unexpected_data_size")
 }
 
 // User problems.
 
 func FmtErrUser(msg string, a ...interface{}) *AppError {
-	return ErrUser(fmt.Sprintf(msg, a...))
+	return errUser(fmt.Sprintf(msg, a...), 1)
 }
 
-func ErrUser(msg string) *AppError {
-	return makeAppError().Describe(msg, "user")
+func errUser(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "user")
 }
 

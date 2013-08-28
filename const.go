@@ -5,8 +5,8 @@
 package logbase
 
 import (
+	"fmt"
 	"bytes"
-	"bufio"
 	"encoding/binary"
 )
 
@@ -24,10 +24,21 @@ const (
 	VALOC_SIZE		LBUINT = LBUINT_SIZE_x3 + LBUINT(LBTYPE_SIZE)
 )
 
+const (
+	LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
+	LBUINT_SIZE_x3  LBUINT = 3 * LBUINT_SIZE
+	LBUINT_SIZE_x4  LBUINT = 4 * LBUINT_SIZE
+)
+
 // Hard wire key/value types for all time.
 const (
-	LBTYPE_NIL			LBTYPE = 0
 	// Fixed size types
+
+	// Non-user space types (automated)
+	LBTYPE_NIL			LBTYPE = 0
+	LBTYPE_VALOC		LBTYPE = 10 // Location in log file of value bytes
+
+	// User space types
 	LBTYPE_UINT8		LBTYPE = 50
 	LBTYPE_UINT16		LBTYPE = 51
 	LBTYPE_UINT32		LBTYPE = 52
@@ -44,89 +55,110 @@ const (
 	LBTYPE_COMPLEX64	LBTYPE = 110
 	LBTYPE_COMPLEX128	LBTYPE = 111
 
-	LBTYPE_VALOC		LBTYPE = 120 // Location in log file of value bytes
 	LBTYPE_MCID		    LBTYPE = 121 // Master Catalog record id
-	LBTYPE_MCID_SET     LBTYPE = 122 // Set (no repeats) list of Master Catalog record ids
-	LBTYPE_MAP			LBTYPE = 125 // map[interface{}]interface{}
-	LBTYPE_LIST			LBTYPE = 130 // []interface{}
 
+	// Non-fixed size types
 	// Only types with underlying []byte type after here
-    LBTYPE_BYTEARRAY	LBTYPE = 170 // Cannot be a key type
+
+	// User space types
+    LBTYPE_BYTES		LBTYPE = 170 // Cannot be a key type
 	LBTYPE_STRING		LBTYPE = 171
-	LBTYPE_GOB			LBTYPE = 172
 	LBTYPE_LOCATION		LBTYPE = 173 // String of file path or URI
 
+	LBTYPE_MCID_SET     LBTYPE = 180 // Set (no repeats) list of Master Catalog record ids
+	LBTYPE_MAP			LBTYPE = 181 // map[string]*Field
+	LBTYPE_LIST			LBTYPE = 182 // []interface{}
+
+	// Non-user space types (automated)
 	LBTYPE_MCK			LBTYPE = 190 // String Master Catalog Key
-	LBTYPE_DOC			LBTYPE = 191 // Composite of LBTYPE_MCK and LBTYPE_MAP
+	LBTYPE_KIND			LBTYPE = 191 // Composite of LBTYPE_MCK and LBTYPE_MCID_SET
+	LBTYPE_DOC			LBTYPE = 192 // Composite of LBTYPE_MCK and LBTYPE_MAP
 )
 
 // Keys
 
 // Keys can only be a subset of the LBTYPEs.
-func NewKey(ktype LBTYPE, debug *DebugLogger) interface{} {
-	switch ktype {
-	case LBTYPE_UINT8:
-		var p uint8
-		return interface{}(p)
-	case LBTYPE_UINT16:
-		var p uint16
-		return interface{}(p)
-	case LBTYPE_UINT32:
-		var p uint32
-		return interface{}(p)
-	case LBTYPE_UINT64:
-		var p uint64
-		return interface{}(p)
-	case LBTYPE_INT8:
-		var p int8
-		return interface{}(p)
-	case LBTYPE_INT16:
-		var p int16
-		return interface{}(p)
-	case LBTYPE_INT32:
-		var p int32
-		return interface{}(p)
-	case LBTYPE_INT64:
-		var p int64
-		return interface{}(p)
-	case LBTYPE_FLOAT32:
-		var p float32
-		return interface{}(p)
-	case LBTYPE_FLOAT64:
-		var p float64
-		return interface{}(p)
-	case LBTYPE_COMPLEX64:
-		var p complex64
-		return interface{}(p)
-	case LBTYPE_COMPLEX128:
-		var p complex128
-		return interface{}(p)
-	case LBTYPE_MCID:
-		var p MCID_TYPE
-		return interface{}(p)
-	case LBTYPE_STRING:
-		var p string
-		return interface{}(p)
-	default:
-		debug.Error(FmtErrBadType("Bad key type: %d", ktype))
-	}
-    return nil
-}
-
-func GetKey(kbyts []byte, ktype LBTYPE, debug *DebugLogger) (key interface{}) {
-	if IsFixedSizeType(ktype) {
-		key = NewKey(ktype, debug)
-		bfr := bufio.NewReader(bytes.NewBuffer(kbyts))
-		binary.Read(bfr, BIGEND, &key)
+func MakeKey(kbyts []byte, ktype LBTYPE, debug *DebugLogger) (interface{}, error) {
+	if IsAllowableKey(ktype) {
+		return MakeTypeFromBytes(kbyts, ktype)
 	} else {
-		// Must be a string
-		key = string(kbyts)
+		err := debug.Error(FmtErrBadType("Bad key type: %d", ktype))
+		return nil, err
 	}
-    return
 }
 
-func IsFixedSizeType(typ LBTYPE) bool {
-    return typ < LBTYPE_BYTEARRAY
+// Keys can only be a subset of the LBTYPEs.
+func MakeTypeFromBytes(byts []byte, typ LBTYPE) (interface{}, error) {
+	bfr := bytes.NewBuffer(byts)
+	switch typ {
+	case LBTYPE_UINT8:
+		var v uint8
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_UINT16:
+		var v uint16
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_UINT32:
+		var v uint32
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_UINT64:
+		var v uint64
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_INT8:
+		var v int8
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_INT16:
+		var v int16
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_INT32:
+		var v int32
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_INT64:
+		var v int64
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_FLOAT32:
+		var v float32
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_FLOAT64:
+		var v float64
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_COMPLEX64:
+		var v complex64
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_COMPLEX128:
+		var v complex128
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_MCID:
+		var v MCID_TYPE
+		err := binary.Read(bfr, BIGEND, &v)
+		return v, err
+	case LBTYPE_STRING,
+		 LBTYPE_LOCATION,
+		 LBTYPE_MCK:
+		return string(byts), nil
+	case LBTYPE_MCID_SET:
+		v := NewMasterCatalogIdSet()
+		err := v.FromBytes(bfr, ScreenLogger)
+		return v, err
+	case LBTYPE_KIND,
+		 LBTYPE_DOC:
+		v := MintNode(typ)
+		err := v.FromBytes(bfr)
+		return v, err
+	default:
+		return byts, nil
+	}
 }
 
 func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
@@ -166,6 +198,101 @@ func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
 }
 
 func IsStringType(typ LBTYPE) bool {
-	switch typ {case LBTYPE_STRING, LBTYPE_LOCATION, LBTYPE_MCK: return true}
+	switch typ {
+	case LBTYPE_STRING,
+		 LBTYPE_LOCATION,
+		 LBTYPE_MCK:
+		return true
+	}
 	return false
 }
+
+func IsNumberType(typ LBTYPE) bool {
+	switch typ {
+	case LBTYPE_UINT8,
+		 LBTYPE_UINT16,
+		 LBTYPE_UINT32,
+		 LBTYPE_UINT64,
+		 LBTYPE_INT8,
+		 LBTYPE_INT16,
+		 LBTYPE_INT32,
+		 LBTYPE_INT64,
+		 LBTYPE_FLOAT32,
+		 LBTYPE_FLOAT64,
+		 LBTYPE_COMPLEX64,
+		 LBTYPE_COMPLEX128,
+		 LBTYPE_MCID:
+		return true
+	}
+	return false
+}
+
+func IsAllowableKey(typ LBTYPE) bool {
+	if IsNumberType(typ) || typ == LBTYPE_STRING {return true}
+	return false
+}
+
+func ToBytes(val interface{}, vt LBTYPE, debug *DebugLogger) (byts []byte, err error) {
+	bfr := new(bytes.Buffer)
+	es := "Type mismatch, value is type %T but LBTYPE is %v"
+	switch v := val.(type) {
+    case uint8:
+		if vt != LBTYPE_UINT8 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case uint16:
+		if vt != LBTYPE_UINT16 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case uint32:
+		if vt != LBTYPE_UINT32 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case uint64:
+		if vt != LBTYPE_UINT64 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case int8:
+		if vt != LBTYPE_INT8 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case int16:
+		if vt != LBTYPE_INT16 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case int32:
+		if vt != LBTYPE_INT32 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case int64:
+		if vt != LBTYPE_INT64 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case float32:
+		if vt != LBTYPE_FLOAT32 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case float64:
+		if vt != LBTYPE_FLOAT64 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case complex64:
+		if vt != LBTYPE_COMPLEX64 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case complex128:
+		if vt != LBTYPE_COMPLEX128 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case MCID_TYPE:
+		if vt != LBTYPE_MCID {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+		binary.Write(bfr, BIGEND, v)
+    case []byte:
+		if vt != LBTYPE_BYTES {
+			return nil, debug.Error(FmtErrBadType(es, v, vt))
+		}
+		binary.Write(bfr, BIGEND, v)
+    case string:
+		if vt != LBTYPE_STRING && vt != LBTYPE_LOCATION {
+			return nil, debug.Error(FmtErrBadType(es, v, vt))
+		}
+		binary.Write(bfr, BIGEND, v)
+	}
+	return bfr.Bytes(), nil
+}
+
+func ValBytesToString(vbyts []byte, vtype LBTYPE) string {
+	v, err := MakeTypeFromBytes(vbyts, vtype)
+	errstr := "" // Because its hard to get debugging in here
+	if err != nil {errstr = "<ERROR " + err.Error() + ">"}
+	return fmt.Sprintf("%v" + errstr, v)
+}
+

@@ -103,9 +103,6 @@ const (
 	MASTER_FILENAME string = ".master"
 	ZAPMAP_FILENAME string = ".zapmap"
 	PERMISSIONS_DIR_NAME string = "users"
-	LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
-	LBUINT_SIZE_x3  LBUINT = 3 * LBUINT_SIZE
-	LBUINT_SIZE_x4  LBUINT = 4 * LBUINT_SIZE
 )
 
 // Logbase database instance.
@@ -295,7 +292,7 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 	if lbase.debug.GetLevel() > DEBUGLEVEL_ADVISE {
 		lbase.debug.Basic(
 			"Putting (%v,%s) into logbase %s",
-			key, ValToString(val, vtype), lbase.name)
+			key, ValBytesToString(val, vtype), lbase.name)
 	}
 
 	if lbase.HasLiveLog() {
@@ -325,7 +322,7 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 		}
 		return mcr, nil
 	}
-	return nil, ErrFileNotFound("Live log file is not defined")
+	return nil, FmtErrLiveLogUndefined()
 }
 
 // Retrieve the value for the given key.  Snips off the value type
@@ -333,7 +330,7 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 func (lbase *Logbase) Get(key interface{}) (vbyts []byte, vtype LBTYPE, err error) {
 	mcr := lbase.mcat.Get(key)
 	if mcr == nil {
-		err = FmtErrKeyNotFound(key)
+		err = nil
 		vbyts = nil
 		vtype = LBTYPE_NIL
 	} else {
@@ -361,3 +358,5 @@ func (lbase *Logbase) Zap(bufsz LBUINT) error {
 	}
 	return nil
 }
+
+func (lbase *Logbase) Name() string {return lbase.name}
