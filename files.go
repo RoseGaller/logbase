@@ -22,6 +22,15 @@ const (
 	TMPFILE_PREFIX      string = ".tmp."
 )
 
+type LBUINT uint32 // Unsigned Logbase integer type used on file
+
+const (
+	LBUINT_SIZE		LBUINT = 4 // bytes 
+	LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
+	LBUINT_SIZE_x3  LBUINT = 3 * LBUINT_SIZE
+	LBUINT_SIZE_x4  LBUINT = 4 * LBUINT_SIZE
+)
+
 // 
 const (
 	APPEND				int = os.O_APPEND

@@ -37,7 +37,10 @@ import (
 )
 
 var nextMCID MCID_TYPE = MCID_MIN // A global Master catalog record id counter
-const MCID_MIN MCID_TYPE = 10 // Allow space for any special records
+const (
+	MCID_MIN MCID_TYPE = 10 // Allow space for any special records
+	NODE_TYPE_SEPARATOR string = ":"
+)
 
 type BYTES []byte
 
@@ -48,6 +51,15 @@ type NodeConfig struct {
 var NodeConfigs = map[LBTYPE]*NodeConfig{
 	LBTYPE_KIND:	&NodeConfig{"kind"},
 	LBTYPE_DOC:		&NodeConfig{"doc"},
+}
+
+var NodeKeyPrefix map[string]LBTYPE = make(map[string]LBTYPE)
+
+func init() {
+	// Create namespace reverse map, adding in NODE_TYPE_SEPARATOR
+	for typ, ncfg := range NodeConfigs {
+		NodeKeyPrefix[ncfg.namespace + NODE_TYPE_SEPARATOR] = typ
+	}
 }
 
 // A Node can represent a "kind" (type or class) or a "document".
@@ -360,22 +372,23 @@ func MakeNode(name string, ntype LBTYPE, debug *DebugLogger) *Node {
 }
 
 func NormaliseNodeName(name string, ntype LBTYPE) string {
-	prefix := NodeConfigs[ntype].namespace + ":"
-    base := strings.TrimPrefix(name, prefix)
-	return prefix + base
+	prefix := NodeConfigs[ntype].namespace + NODE_TYPE_SEPARATOR
+    basename := strings.TrimPrefix(name, prefix)
+	return prefix + basename
 }
 
-func (lbase *Logbase) NewNode(name string, ntype LBTYPE) (node *Node, exists bool, err error) {
+func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Node, exists bool, err error) {
 	name = NormaliseNodeName(name, ntype)
 	vbyts, vtype, err := lbase.Get(name)
 	if err != nil {return}
-	node = MakeNode(name, ntype, lbase.debug)
-	if vbyts == nil {
-		exists = false
+	exists = false
+	if vbyts == nil && create {
 		// A new node
+		node = MakeNode(name, ntype, lbase.debug)
 		node.SetId(GetAndIncNextMCID())
 	} else {
 		exists = true
+		node = MakeNode(name, ntype, lbase.debug)
 		// Read existing node data
 		if vtype != LBTYPE_MCID {
 			err = lbase.debug.Error(FmtErrBadType(
@@ -461,14 +474,24 @@ func (node *Node) HasFields() int {
 
 // Create a Kind instance, and retrieve the logbase data for it if it exists.
 func (lbase *Logbase) Kind(name string) (*Node, bool, error) {
-	return lbase.NewNode(name, LBTYPE_KIND)
+	return lbase.NewNode(name, LBTYPE_KIND, true)
+}
+
+// Retrieve the Kind if it exists.
+func (lbase *Logbase) GetKind(name string) (*Node, bool, error) {
+	return lbase.NewNode(name, LBTYPE_KIND, false)
 }
 
 // Document.
 
 // Create a Document instance, and retrieve the logbase data for it if it exists.
 func (lbase *Logbase) Doc(name string) (*Node, bool, error) {
-	return lbase.NewNode(name, LBTYPE_DOC)
+	return lbase.NewNode(name, LBTYPE_DOC, true)
+}
+
+// Retrieve the Doc if it exists.
+func (lbase *Logbase) GetDoc(name string) (*Node, bool, error) {
+	return lbase.NewNode(name, LBTYPE_DOC, false)
 }
 
 // Fields.
@@ -513,7 +536,6 @@ func (node *Node) SetFieldWithType(label string, val interface{}, vtype LBTYPE) 
 	return node
 }
 
-// 
 func (fmap *FieldMap) ToBytes(debug *DebugLogger) []byte {
 	bfr := new(bytes.Buffer)
 	var vsz LBUINT
@@ -570,34 +592,54 @@ func (fmap *FieldMap) String() string {
 	return result + "}"
 }
 
-// Documents.
+// Find.
 
-//func NewDoc(name string, kind *Node) *Document {
-//	return &Document{
-//		name: name,
-//		kind: kind,
-//		FieldMap: NewFieldMap(),
-//	}
-//}
+func GetNodeNameType(key interface{}) (string, LBTYPE) {
+	if k, ok := key.(string); ok {
+		for prefix, ntype := range NodeKeyPrefix { // note prefix includes separator
+			if strings.HasPrefix(k, prefix) {
+				basename := strings.TrimPrefix(k, prefix)
+				return basename, ntype
+			}
+		}
+	}
+	return "", LBTYPE_NIL
+}
 
-// Pack/unpack document to/from []byte value. 
+func (lbase *Logbase) FindOfKind(name string, ntype LBTYPE) []*Node {
+	var result []*Node
+	kind, exists, err := lbase.NewNode(name, LBTYPE_KIND, false)
+	if err != nil {
+		lbase.debug.Error(err)
+		return nil
+	}
+	if !exists {
+		lbase.debug.Error(
+			FmtErrKeyNotFound(NormaliseNodeName(name, LBTYPE_KIND)))
+		return nil
+	}
+	var basename string
+	var typ LBTYPE
+	for key, _ := range lbase.mcat.index {
+        basename, typ = GetNodeNameType(key)
+		if typ == ntype {
+			node, _, err := lbase.NewNode(basename, ntype, true)
+			lbase.debug.Error(err)
+			if err == nil && node.Parents().Contains(kind.MCID()) {
+				result = append(result, node)
+			}
+		}
+	}
+	return result
+}
 
-//func (doc *Document) Pack() []byte {
-//	bfr := new(bytes.Buffer)
-//}
-//
-//// Pack a FieldMap into bytes ready for disk.
-//func (fmap *FieldMap) Pack(debug *DebugLogger) []byte {
-//	bfr := new(bytes.Buffer)
-//	for k, f := range fmap.fields {
-//		kbyts := InjectKeyType(k, debug)
-//		vbyts := InjectType(f.val, f.lbtype)
-//		binary.Write(bfr, BIGEND, AsLBUINT(len(kbyts)))
-//		bfr.Write(kbyts)
-//		binary.Write(bfr, BIGEND, AsLBUINT(len(vbyts)))
-//		bfr.Write(vbyts)
-//	}
-//}
+func (lbase *Logbase) FindKindOfKind(name string) []*Node {
+	return lbase.FindOfKind(name, LBTYPE_KIND)
+}
+
+func (lbase *Logbase) FindDocOfKind(name string) []*Node {
+	return lbase.FindOfKind(name, LBTYPE_DOC)
+}
 
 // Master Catalog id counter.
 

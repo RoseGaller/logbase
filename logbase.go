@@ -148,7 +148,8 @@ type LogbaseConfiguration struct {
 	LOGFILE_MAXBYTES        int // Size of live log file before spawning a new one
 	// Usually the Master Catalog holds only value locations, but if the
 	// value is small enough, we can also keep it in RAM for speed 
-	MCAT_VALUE_MAXSIZE		int
+	CACHE_VALUES			bool
+	CACHE_VALUE_MAXSIZE		int
 }
 
 // Default configuration in case file is absent.
@@ -157,7 +158,8 @@ func DefaultConfig() *LogbaseConfiguration {
 		LOGFILE_NAME_EXTENSION:     "logbase",
 		INDEXFILE_NAME_EXTENSION:   "index",
 		LOGFILE_MAXBYTES:           1048576, // 1 MB
-		MCAT_VALUE_MAXSIZE:         1024, // 1 KB
+		CACHE_VALUES:				true, // cache in RAM
+		CACHE_VALUE_MAXSIZE:        1024, // 1 KB
 	}
 }
 
@@ -285,18 +287,15 @@ func (lbase *Logbase) Init(user, passhash string) error {
 
 // Save the key-value pair in the live log.  Handles the value type
 // prepend into the value bytes.
-func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCatalogRecord, error) {
-	//lbase.debug.SuperFine(
-	//	"Putting (%v,[%d]byte) into logbase %s",
-	//	key, len(val), lbase.name)
+func (lbase *Logbase) Put(key interface{}, vbyts []byte, vtype LBTYPE) (MasterCatalogRecord, error) {
 	if lbase.debug.GetLevel() > DEBUGLEVEL_ADVISE {
 		lbase.debug.Basic(
 			"Putting (%v,%s) into logbase %s",
-			key, ValBytesToString(val, vtype), lbase.name)
+			key, ValBytesToString(vbyts, vtype), lbase.name)
 	}
 
 	if lbase.HasLiveLog() {
-		lrec := MakeLogRecord(key, val, vtype, lbase.debug)
+		lrec := MakeLogRecord(key, vbyts, vtype, lbase.debug)
 		aftersize := lbase.livelog.size + len(lrec.Pack())
 		if aftersize > lbase.config.LOGFILE_MAXBYTES {
 			lbase.NewLiveLog()
@@ -309,13 +308,9 @@ func (lbase *Logbase) Put(key interface{}, val []byte, vtype LBTYPE) (MasterCata
 		_, vloc := lbase.UpdateZapmap(irec, lbase.livelog.fnum)
 
 		// Update Master Catalog in RAM with value or its location
-		storeValueInRAM := len(val) + LBTYPE_SIZE <= lbase.config.MCAT_VALUE_MAXSIZE
 		var mcr MasterCatalogRecord
-		if storeValueInRAM {
-			v := NewValue()
-			v.ValueLocation = vloc
-			v.vbyts = val
-			v.vtype = vtype
+		if lbase.config.CACHE_VALUES && lbase.OkToCacheValue(vbyts, vtype) {
+			v := vloc.ToValue(vbyts, vtype)
 			mcr = lbase.UpdateMasterCatalog(key, v)
 		} else {
 			mcr = lbase.UpdateMasterCatalog(key, vloc)
@@ -335,8 +330,13 @@ func (lbase *Logbase) Get(key interface{}) (vbyts []byte, vtype LBTYPE, err erro
 		vtype = LBTYPE_NIL
 	} else {
 		vbyts, vtype, err = mcr.ReadVal(lbase)
+		if lbase.config.CACHE_VALUES && lbase.OkToCacheValue(vbyts, vtype) {
+			if vloc, ok := mcr.(*ValueLocation); ok {
+				mcr := vloc.ToValue(vbyts, vtype)
+				lbase.mcat.Put(key, mcr)
+			}
+		}
 	}
-
 	return
 }
 

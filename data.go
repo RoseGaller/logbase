@@ -535,6 +535,14 @@ func (zrec *ZapRecord) FromValueLocation(ksz LBUINT, vloc *ValueLocation) {
 	return
 }
 
+func (vloc *ValueLocation) ToValue(vbyts []byte, vtype LBTYPE) *Value {
+	v := NewValue()
+	v.ValueLocation = vloc
+	v.vbyts = vbyts
+	v.vtype = vtype
+	return v
+}
+
 // Map GenericRecord to a new LogRecord.
 func (rec *GenericRecord) ToLogRecord(debug *DebugLogger) *LogRecord {
 	lrec := NewLogRecord()
@@ -849,6 +857,10 @@ func BoolToUint8(x bool) uint8 {
 }
 
 // Size calculations.
+
+func (lbase *Logbase) OkToCacheValue(vbyts []byte, vtype LBTYPE) bool {
+	return len(vbyts) + LBTYPE_SIZE <= lbase.config.CACHE_VALUE_MAXSIZE
+}
 
 // Use reflection to find the byte size of any parameter, as an LBUINT.
 func ParamSize(param interface{}) LBUINT {

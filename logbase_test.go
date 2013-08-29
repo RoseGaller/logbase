@@ -75,49 +75,66 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 }
 
 // Create some Kinds.
-func TestBrandNewKinds(t *testing.T) {
+func TestNewKinds(t *testing.T) {
 	colour, _, err := lbase.Kind("Colour")
-	if err != nil {
-		t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)
-	}
-	green, _, err := lbase.Kind("Green")
-	if err != nil {
-		t.Fatalf("Problem creating kind %q: %s", green.Name(), err)
-	}
-	green.OfKind(colour)
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)}
 	err = colour.Save(lbase)
-	if err != nil {
-		t.Fatalf("Problem saving kind %q: %s", colour.Name(), err)
-	}
+	if err != nil {t.Fatalf("Problem saving kind %q: %s", colour.Name(), err)}
+
+	green, _, err := lbase.Kind("Green")
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", green.Name(), err)}
+	green.OfKind(colour)
 	err = green.Save(lbase)
-	if err != nil {
-		t.Fatalf("Problem saving kind %q: %s", green.Name(), err)
-	}
+	if err != nil {t.Fatalf("Problem saving kind %q: %s", green.Name(), err)}
+
+	blue, _, err := lbase.Kind("Blue")
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", blue.Name(), err)}
+	blue.OfKind(colour)
+	err = blue.Save(lbase)
+	if err != nil {t.Fatalf("Problem saving kind %q: %s", blue.Name(), err)}
 }
 
-// Create a Document.
-func TestBrandNewDoc(t *testing.T) {
+// Create some Documents along with some more Kinds.
+func TestNewDocs(t *testing.T) {
 	animal, _, err := lbase.Kind("Animal")
-	if err != nil {
-		t.Fatalf("Problem creating kind %q: %s", animal.Name(), err)
-	}
-	frog, _, err := lbase.Doc("frog")
-	if err != nil {
-		t.Fatalf("Problem creating doc %q: %s", frog.Name(), err)
-	}
-
-	frog.OfKind(animal)
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", animal.Name(), err)}
 	err = animal.Save(lbase)
-	if err != nil {
-		t.Fatalf("Problem saving kind %q: %s", animal.Name(), err)
-	}
+	if err != nil {t.Fatalf("Problem saving kind %q: %s", animal.Name(), err)}
 
-	frog.SetFieldWithType("eyes", uint8(2), LBTYPE_UINT8)
+	person, _, err := lbase.Kind("Person")
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", person.Name(), err)}
+	person.OfKind(animal)
+	err = person.Save(lbase)
+	if err != nil {t.Fatalf("Problem saving kind %q: %s", person.Name(), err)}
 
+	george, _, err := lbase.Doc("George")
+	if err != nil {t.Fatalf("Problem creating doc %q: %s", george.Name(), err)}
+	george.OfKind(person)
+	george.SetFieldWithType("age", int32(13), LBTYPE_INT32)
+
+	frog, _, err := lbase.Doc("frog")
+	if err != nil {t.Fatalf("Problem creating doc %q: %s", frog.Name(), err)}
+	frog.OfKind(animal)
+	frog.SetFieldWithType("name", "Oscar", LBTYPE_STRING)
+	green, _, err := lbase.GetKind("Green")
+	if err != nil {t.Fatalf("Problem retrieving kind %q: %s", green.Name(), err)}
+	frog.SetFieldWithType("colour", green.Id(), LBTYPE_MCID)
+	frog.SetFieldWithType("owner", george.Id(), LBTYPE_MCID)
 	err = frog.Save(lbase)
-	if err != nil {
-		t.Fatalf("Problem saving doc %q: %s", frog.Name(), err)
-	}
+	if err != nil {t.Fatalf("Problem saving doc %q: %s", frog.Name(), err)}
+
+	dog, _, err := lbase.Doc("dog")
+	if err != nil {t.Fatalf("Problem creating doc %q: %s", dog.Name(), err)}
+	dog.OfKind(animal)
+	dog.SetFieldWithType("name", "Fido", LBTYPE_STRING)
+	dog.SetFieldWithType("eyes", uint8(2), LBTYPE_UINT8)
+	dog.SetFieldWithType("owner", george.Id(), LBTYPE_MCID)
+	err = dog.Save(lbase)
+	if err != nil {t.Fatalf("Problem saving doc %q: %s", dog.Name(), err)}
+
+	err = george.Save(lbase)
+	if err != nil {t.Fatalf("Problem creating doc %q: %s", george.Name(), err)}
+
 	lbase.debug.DumpMasterCatalog(lbase)
 }
 
@@ -308,33 +325,34 @@ func TestZap(t *testing.T) {
 // Verify integrity of kinds following init cycling.
 func TestLoadedKinds(t *testing.T) {
 	colour, exists, err := lbase.Kind("Colour")
-	if err != nil {
-		t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)
-	}
-	if !exists {
-		t.Fatalf("The kind %q was not found", colour.Name())
-	}
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)}
+	if !exists {t.Fatalf("The kind %q was not found", colour.Name())}
 	if colour.MCID().id != MCID_MIN {
 		t.Fatalf("The kind %q should have MCID %v but instead has %v",
 			colour.Name(), MCID_MIN, colour.MCID())
 	}
 
-	lbase.debug.Check("colour = %v", colour)
-
 	green, exists, err := lbase.Kind("Green")
-	if err != nil {
-		t.Fatalf("Problem creating kind %q: %s", green.Name(), err)
-	}
-	if !exists {
-		t.Fatalf("The kind %q was not found", green.Name())
-	}
-
-	lbase.debug.Check("green = %v", green)
+	if err != nil {t.Fatalf("Problem creating kind %q: %s", green.Name(), err)}
+	if !exists {t.Fatalf("The kind %q was not found", green.Name())}
 
 	if !green.HasParent(colour) {
-		t.Fatalf("Kind %q should have kind %q as a parent", green.Name(), colour.Name())
+		t.Fatalf("Kind %q should have kind %q as a parent",
+		green.Name(), colour.Name())
 	}
+}
 
+// Test basic Find.
+func TestFind(t *testing.T) {
+	colours := lbase.FindKindOfKind("Colour")
+	if len(colours) != 2 {
+		t.Fatalf("The number of colour kinds found was %d, it should be %d",
+			len(colours), 2)
+	}
+	for _, node := range colours {
+		lbase.debug.Check("%v", node)
+	}
+	lbase.debug.DumpMasterCatalog(lbase)
 }
 
 // SUPPORT FUNCTIONS ==========================================================

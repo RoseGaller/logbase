@@ -10,24 +10,16 @@ import (
 	"encoding/binary"
 )
 
-type LBUINT uint32 // Unsigned Logbase integer type used on file
 type LBTYPE uint8 // Value type identifier
 type MCID_TYPE uint64 // Master Catalog record id key type
 
 // Keep these consistent!
 const (
-	LBUINT_SIZE		LBUINT = 4 // bytes 
 	LBTYPE_SIZE		int = 1 // bytes
 	MCID_TYPE_SIZE	int = 8 // bytes
 	LBUINT_MAX      int64 = 4294967295
 	CRC_SIZE		LBUINT = 4
 	VALOC_SIZE		LBUINT = LBUINT_SIZE_x3 + LBUINT(LBTYPE_SIZE)
-)
-
-const (
-	LBUINT_SIZE_x2  LBUINT = 2 * LBUINT_SIZE
-	LBUINT_SIZE_x3  LBUINT = 3 * LBUINT_SIZE
-	LBUINT_SIZE_x4  LBUINT = 4 * LBUINT_SIZE
 )
 
 // Hard wire key/value types for all time.
@@ -279,12 +271,12 @@ func ToBytes(val interface{}, vt LBTYPE, debug *DebugLogger) (byts []byte, err e
 		if vt != LBTYPE_BYTES {
 			return nil, debug.Error(FmtErrBadType(es, v, vt))
 		}
-		binary.Write(bfr, BIGEND, v)
+		return v, nil
     case string:
 		if vt != LBTYPE_STRING && vt != LBTYPE_LOCATION {
 			return nil, debug.Error(FmtErrBadType(es, v, vt))
 		}
-		binary.Write(bfr, BIGEND, v)
+		return []byte(v), nil
 	}
 	return bfr.Bytes(), nil
 }
@@ -295,4 +287,3 @@ func ValBytesToString(vbyts []byte, vtype LBTYPE) string {
 	if err != nil {errstr = "<ERROR " + err.Error() + ">"}
 	return fmt.Sprintf("%v" + errstr, v)
 }
-
