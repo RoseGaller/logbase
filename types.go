@@ -1,6 +1,5 @@
 /*
-	Defines constants whose specs are effectively frozen in the binary data of
-	logbases.  Changes to these values are not backward compatible.
+	Manipulation of LBTYPES.
 */
 package logbase
 
@@ -8,63 +7,6 @@ import (
 	"fmt"
 	"bytes"
 	"encoding/binary"
-)
-
-type LBTYPE uint8 // Value type identifier
-type MCID_TYPE uint64 // Master Catalog record id key type
-
-// Keep these consistent!
-const (
-	LBTYPE_SIZE		int = 1 // bytes
-	MCID_TYPE_SIZE	int = 8 // bytes
-	LBUINT_MAX      int64 = 4294967295
-	CRC_SIZE		LBUINT = 4
-	VALOC_SIZE		LBUINT = LBUINT_SIZE_x3 + LBUINT(LBTYPE_SIZE)
-)
-
-// Hard wire key/value types for all time.
-const (
-	// Fixed size types
-
-	// Non-user space types (automated)
-	LBTYPE_NIL			LBTYPE = 0
-	LBTYPE_VALOC		LBTYPE = 10 // Location in log file of value bytes
-
-	// User space types
-	LBTYPE_UINT8		LBTYPE = 50
-	LBTYPE_UINT16		LBTYPE = 51
-	LBTYPE_UINT32		LBTYPE = 52
-	LBTYPE_UINT64		LBTYPE = 53
-
-	LBTYPE_INT8			LBTYPE = 70
-	LBTYPE_INT16		LBTYPE = 71
-	LBTYPE_INT32		LBTYPE = 72
-	LBTYPE_INT64		LBTYPE = 74
-
-	LBTYPE_FLOAT32		LBTYPE = 90
-	LBTYPE_FLOAT64		LBTYPE = 91
-
-	LBTYPE_COMPLEX64	LBTYPE = 110
-	LBTYPE_COMPLEX128	LBTYPE = 111
-
-	LBTYPE_MCID		    LBTYPE = 121 // Master Catalog record id
-
-	// Non-fixed size types
-	// Only types with underlying []byte type after here
-
-	// User space types
-    LBTYPE_BYTES		LBTYPE = 170 // Cannot be a key type
-	LBTYPE_STRING		LBTYPE = 171
-	LBTYPE_LOCATION		LBTYPE = 173 // String of file path or URI
-
-	LBTYPE_MCID_SET     LBTYPE = 180 // Set (no repeats) list of Master Catalog record ids
-	LBTYPE_MAP			LBTYPE = 181 // map[string]*Field
-	LBTYPE_LIST			LBTYPE = 182 // []interface{}
-
-	// Non-user space types (automated)
-	LBTYPE_MCK			LBTYPE = 190 // String Master Catalog Key
-	LBTYPE_KIND			LBTYPE = 191 // Composite of LBTYPE_MCK and LBTYPE_MCID_SET
-	LBTYPE_DOC			LBTYPE = 192 // Composite of LBTYPE_MCK and LBTYPE_MAP
 )
 
 // Keys
@@ -131,16 +73,16 @@ func MakeTypeFromBytes(byts []byte, typ LBTYPE) (interface{}, error) {
 		var v complex128
 		err := binary.Read(bfr, BIGEND, &v)
 		return v, err
-	case LBTYPE_MCID:
-		var v MCID_TYPE
+	case LBTYPE_CATID:
+		var v CATID_TYPE
 		err := binary.Read(bfr, BIGEND, &v)
 		return v, err
 	case LBTYPE_STRING,
 		 LBTYPE_LOCATION,
-		 LBTYPE_MCK:
+		 LBTYPE_CATKEY:
 		return string(byts), nil
-	case LBTYPE_MCID_SET:
-		v := NewMasterCatalogIdSet()
+	case LBTYPE_CATID_SET:
+		v := NewCatalogIdSet()
 		err := v.FromBytes(bfr, ScreenLogger)
 		return v, err
 	case LBTYPE_KIND,
@@ -179,8 +121,8 @@ func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
 		return LBTYPE_COMPLEX64
 	case complex128:
 		return LBTYPE_COMPLEX128
-	case MCID_TYPE:
-		return LBTYPE_MCID
+	case CATID_TYPE:
+		return LBTYPE_CATID
 	case string:
 		return LBTYPE_STRING
 	default:
@@ -193,7 +135,7 @@ func IsStringType(typ LBTYPE) bool {
 	switch typ {
 	case LBTYPE_STRING,
 		 LBTYPE_LOCATION,
-		 LBTYPE_MCK:
+		 LBTYPE_CATKEY:
 		return true
 	}
 	return false
@@ -213,7 +155,7 @@ func IsNumberType(typ LBTYPE) bool {
 		 LBTYPE_FLOAT64,
 		 LBTYPE_COMPLEX64,
 		 LBTYPE_COMPLEX128,
-		 LBTYPE_MCID:
+		 LBTYPE_CATID:
 		return true
 	}
 	return false
@@ -264,8 +206,8 @@ func ToBytes(val interface{}, vt LBTYPE, debug *DebugLogger) (byts []byte, err e
     case complex128:
 		if vt != LBTYPE_COMPLEX128 {return nil, debug.Error(FmtErrBadType(es, v, vt))}
 		binary.Write(bfr, BIGEND, v)
-    case MCID_TYPE:
-		if vt != LBTYPE_MCID {return nil, debug.Error(FmtErrBadType(es, v, vt))}
+    case CATID_TYPE:
+		if vt != LBTYPE_CATID {return nil, debug.Error(FmtErrBadType(es, v, vt))}
 		binary.Write(bfr, BIGEND, v)
     case []byte:
 		if vt != LBTYPE_BYTES {

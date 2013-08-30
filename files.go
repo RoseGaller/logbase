@@ -63,17 +63,6 @@ func NewFile() *File {
 	return &File{}
 }
 
-// Map of all files managed by the Logbase.  This allows us to keep a single RWMutex
-// associated with each file.
-type FileRegister struct {
-	files   map[string]*File
-}
-
-// Init new file register.
-func NewFileRegister() *FileRegister {
-	return &FileRegister{files: make(map[string]*File)}
-}
-
 // Test whether the given file or directory exists.
 func Exists(abspath string) bool {
 	_, err := os.Stat(abspath)
@@ -85,19 +74,19 @@ func Exists(abspath string) bool {
 // Use this as the gateway for file creation/retrieval
 // where possible to take advantage of the file register
 // and ensure proper initialisation.
-func (lbase *Logbase) GetFile(relpath string) (file *File, err error) {
+func (lbase *Logbase) GetFile(relpath string) (*File, error) {
 	fpath := path.Join(lbase.abspath, relpath)
 	// Use existing File if present
-	file, present := lbase.freg.files[fpath]
-	if present {return}
+	obj, present := lbase.FileCache().objects[fpath]
+	if present {return obj.(*File), nil}
 
 	// Create file and its tmp twin
-	file = lbase.MakeFile(fpath)
+	file := lbase.MakeFile(fpath)
 	// The tmp twin
 	file.tmp = lbase.MakeFile(file.TmpTwinPath())
 
-	err = file.Touch()
-	return
+	err := file.Touch()
+	return file, err
 }
 
 // Construct a new file.
@@ -107,7 +96,7 @@ func (lbase *Logbase) MakeFile(path string) (file *File) {
 	fileCounter++
 	file.abspath = path
 	file.debug = lbase.debug
-	lbase.freg.files[file.abspath] = file
+	lbase.FileCache().objects[file.abspath] = file
 	return file
 }
 
@@ -377,14 +366,6 @@ func (file *File) LockedWriteAt(byts []byte, pos LBUINT) (nw int, err error) {
 	nw, err = file.gofile.WriteAt(byts, int64(pos))
 	file.Unlock()
 	return
-}
-
-func (freg *FileRegister) StringArray() []string {
-	var result []string
-	for k, _ := range freg.files {
-		result = append(result, freg.files[k].String())
-	}
-	return result
 }
 
 func (file *File) String() string {

@@ -115,13 +115,13 @@ func NewIndexfile() *Indexfile {
 }
 
 // Allow persistence of master catalog.
-type Masterfile struct {
+type CatalogFile struct {
 	*File
 }
 
-// Init a Masterfile.
-func NewMasterfile(file *File) *Masterfile {
-	return &Masterfile{
+// Init a CatalogFile.
+func NewCatalogFile(file *File) *CatalogFile {
+	return &CatalogFile{
 		File: file,
 	}
 }
@@ -262,6 +262,34 @@ func (lbase *Logbase) MakeIndexfileRelPath(fnum LBUINT) string {
 	return MakeIndexfileName(fnum, lbase.config.INDEXFILE_NAME_EXTENSION)
 }
 
+// Assemble a list of all Catalog files in the current logbase,
+// unsorted, other than the Master Catalog.
+func (lbase *Logbase) GetCatalogNames() (names []string, err error) {
+	var nscan int = 0 // Number of file objects scanned
+
+	findCatalogFile := func(fpath string, fileInfo os.FileInfo, inerr error) (err error) {
+		stat, err := os.Stat(fpath)
+		if err != nil {return}
+
+		if nscan > 0 && stat.IsDir() {
+			return filepath.SkipDir
+		}
+		nscan++
+
+		fname := filepath.Base(fpath)
+		if strings.HasPrefix(fname, CATALOG_FILENAME_PREFIX) {
+			catname := strings.TrimPrefix(fname, CATALOG_FILENAME_PREFIX)
+			if catname != MASTER_CATALOG_NAME {
+				names = append(names, catname)
+			}
+		}
+		return
+	}
+
+	err = filepath.Walk(lbase.abspath, findCatalogFile)
+	return
+}
+
 // Assemble a list of all user permission files in the current logbase,
 // unsorted.
 func (lbase *Logbase) GetUserPermissionPaths() (usernames []string, err error) {
@@ -286,11 +314,15 @@ func (lbase *Logbase) GetUserPermissionPaths() (usernames []string, err error) {
 // Save the master catalog, zapmap and user permission files for the logbase.  Only
 // save each if there has been a change.
 func (lbase *Logbase) Save() (err error) {
-	if lbase.mcat.changed {
-		err = lbase.debug.Error(lbase.mcat.Save(lbase.debug))
-		if err != nil {return}
-		lbase.mcat.changed = false
-		lbase.debug.Advise("Saved master catalog for logbase %q", lbase.name)
+	for _, obj := range lbase.catcache.objects {
+		cat := obj.(*Catalog)
+		if cat.autosave && cat.changed {
+			err = lbase.debug.Error(cat.Save(lbase.debug))
+			if err != nil {return}
+			cat.changed = false
+			lbase.debug.Advise("Saved catalog %q for logbase %q",
+				cat.Name(), lbase.Name())
+		}
 	}
 	if lbase.zmap.changed {
 		err = lbase.debug.Error(lbase.zmap.Save(lbase.debug))
@@ -588,50 +620,50 @@ func (zmap *Zapmap) Save(debug *DebugLogger) (err error) {
 	return
 }
 
-// Master index file methods.
+// Catalog file methods.
 
-// Read master catalog file into a new master catalog.
-func (mcat *MasterCatalog) Load(debug *DebugLogger) (err error) {
-	ResetMCID()
-	mcat.file.Open(READ_ONLY)
-	defer mcat.file.Close()
-	if mcat.file.size == 0 {return}
-	mcat.Lock()
+// Read catalog file into a new master catalog.
+func (cat *Catalog) Load(debug *DebugLogger) (err error) {
+	cat.ResetId()
+	cat.file.Open(READ_ONLY)
+	defer cat.file.Close()
+	if cat.file.size == 0 {return}
+	cat.Lock()
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
 			key, vloc := rec.ToValueLocation(debug)
-			mcat.index[key] = vloc // Don't need to use gateway because mcat is fresh
-			SetNextMCID(key) // Increment the NextMCI if necessary 
+			cat.index[key] = vloc // Don't need to use gateway because cat is fresh
+			cat.SetNextId(key) // Increment the NextMCI if necessary 
 		}
 		return nil
 	}
-	err = mcat.file.Process(f, MASTER_RECORD, false)
-	mcat.Unlock()
+	err = cat.file.Process(f, MASTER_RECORD, false)
+	cat.Unlock()
 	return
 }
 
-// Write master catalog file.  Even though the catalog can contain values in RAM,
+// Write catalog file.  Even though the catalog can contain values in RAM,
 // we only write the value locations to file.
-func (mcat *MasterCatalog) Save(debug *DebugLogger) (err error) {
-	mcat.file.tmp.Open(CREATE | WRITE_ONLY)
+func (cat *Catalog) Save(debug *DebugLogger) (err error) {
+	cat.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
 	var vloc *ValueLocation
-	mcat.RLock()
-	for key, mcr := range mcat.index {
-		switch r := mcr.(type) {
+	cat.RLock()
+	for key, cr := range cat.index {
+		switch r := cr.(type) {
 		case *ValueLocation:
 			vloc = r
 		case *Value:
 			vloc = r.ValueLocation
 		}
-		nw, err = mcat.file.tmp.LockedWriteAt(vloc.Pack(key, debug), pos)
+		nw, err = cat.file.tmp.LockedWriteAt(vloc.Pack(key, debug), pos)
 		if err != nil {return}
 		pos = pos.Plus(nw)
 	}
-	mcat.file.tmp.Close()
-	err = mcat.file.ReplaceWithTmpTwin()
-	mcat.RUnlock()
+	cat.file.tmp.Close()
+	err = cat.file.ReplaceWithTmpTwin()
+	cat.RUnlock()
 	return
 }
 

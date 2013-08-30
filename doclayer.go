@@ -2,9 +2,9 @@
 	Defines and manages Nodes, which can include Kinds or Documents.
 
 	colour := Kind("Colour")
-	// Doesn't exist, MCID_MIN = 10
-	// LB+ LBTYPE_MCID(10) -> LBTYPE_KIND(LBTYPE_MCK("Colour"),LBTYPE_MCID_SET(10))
-	// LB+ "Colour" -> LBTYPE_MCID(10)
+	// Doesn't exist, CATID_MIN = 10
+	// LB+ LBTYPE_CATID(10) -> LBTYPE_KIND(LBTYPE_CATKEY("Colour"),LBTYPE_CATID_SET(10))
+	// LB+ "Colour" -> LBTYPE_CATID(10)
     green := Kind("Green")
 
 	green.Save()
@@ -19,10 +19,10 @@
 	frog.SetField("eyes", uint8(2))
 	frog.SetField("colour", green)
 	frog.Save()
-	// LB+ LBTYPE_MCID(11) -> LBTYPE_MCK("/Thing/Animal/")
-	// LB+ "/Thing/Animal/" -> LBTYPE_MCID(11)
-	// LB+ LBTYPE_MCIDS(12) -> VALOC -> LBTYPE_DOC(LBTYPE_MCK("Thing/Animal/frog"),LBTYPE_MAP("colour":LBTYPE_MCIDS(1),"eyes":LBTYPE_UINT8(2)))
-	// LB+ "/Thing/Animal/frog" -> LBTYPE_MCIDS(12)
+	// LB+ LBTYPE_CATID(11) -> LBTYPE_CATKEY("/Thing/Animal/")
+	// LB+ "/Thing/Animal/" -> LBTYPE_CATID(11)
+	// LB+ LBTYPE_CATIDS(12) -> VALOC -> LBTYPE_DOC(LBTYPE_CATKEY("Thing/Animal/frog"),LBTYPE_MAP("colour":LBTYPE_CATIDS(1),"eyes":LBTYPE_UINT8(2)))
+	// LB+ "/Thing/Animal/frog" -> LBTYPE_CATIDS(12)
 
 	f1 := GetDoc(animal, "frog") // Finds "/Thing/Animal/frog" and retrieves each field into struct
 */
@@ -36,13 +36,9 @@ import (
 	"io"
 )
 
-var nextMCID MCID_TYPE = MCID_MIN // A global Master catalog record id counter
 const (
-	MCID_MIN MCID_TYPE = 10 // Allow space for any special records
 	NODE_TYPE_SEPARATOR string = ":"
 )
-
-type BYTES []byte
 
 type NodeConfig struct {
 	namespace	string
@@ -64,9 +60,9 @@ func init() {
 
 // A Node can represent a "kind" (type or class) or a "document".
 type Node struct {
-	mcid		*MasterCatalogId
+	cid			*CatalogId
 	name		string // MC string key stored with namespace prefix
-	parents		*MasterCatalogIdSet
+	parents		*CatalogIdSet
 	ntype		LBTYPE
 	*FieldMap
 	debug		*DebugLogger // a small price to pay
@@ -81,158 +77,10 @@ type FieldMap struct {
 	fields	map[string]*Field
 }
 
-type MasterCatalogId struct {
-	id		MCID_TYPE
-}
-
-type MasterCatalogIdSet struct {
-	set		[]*MasterCatalogId // Ordered list, with the 0th item the identity
-}
-
-// Master Catalog ID.
-
-func NewMasterCatalogId(id MCID_TYPE) *MasterCatalogId {
-	return &MasterCatalogId{id}
-}
-
-// Compare for equality against another MasterCatalogId.
-func (mcid *MasterCatalogId) Equals(other *MasterCatalogId) bool {
-	if other == nil {return false}
-	return (mcid.id == other.id)
-}
-
-// Return string representation of a MasterCatalogId.
-func (mcid *MasterCatalogId) String() string {
-	return fmt.Sprintf("%d", mcid.id)
-}
-
-// Read the value pointed to by the MasterCatalogId.
-func (mcid *MasterCatalogId) ReadVal(lbase *Logbase) ([]byte, LBTYPE, error) {
-	mcr := lbase.mcat.index[mcid.id]
-	vloc, ok := mcr.(*ValueLocation)
-	if ok {return vloc.ReadVal(lbase)}
-	err := FmtErrBadType(
-			"The Master Catalog id %v points to another id %v, " +
-			"which is prohibited",
-			mcid.id, vloc)
-	return nil, LBTYPE_NIL, err
-}
-
-// Return a byte slice with a MasterCatalogId packed ready for file writing.
-func (mcid *MasterCatalogId) Pack(key interface{}, debug *DebugLogger) []byte {
-	bfr := new(bytes.Buffer)
-	byts := PackKey(key, debug)
-	bfr.Write(byts)
-	binary.Write(bfr, BIGEND, LBTYPE_MCID)
-	binary.Write(bfr, BIGEND, mcid.id)
-	return bfr.Bytes()
-}
-
-// Return the byte slice representation of a MasterCatalogId.
-func (mcid *MasterCatalogId) ToBytes(debug *DebugLogger) []byte {
-	bfr := new(bytes.Buffer)
-	binary.Write(bfr, BIGEND, mcid.id)
-	return bfr.Bytes()
-}
-
-// Read an MCID from a byte slice.
-func (byts BYTES) ToIdKey(debug *DebugLogger) (interface{}, error) {
-	bfr := bytes.NewBuffer(byts)
-	var mcid MCID_TYPE
-	err := debug.DecodeError(binary.Read(bfr, BIGEND, &mcid))
-	return mcid, err
-}
-
-// Master Catalog ID Set.
-
-func NewMasterCatalogIdSet() *MasterCatalogIdSet {
-	return &MasterCatalogIdSet{}
-}
-
-func MakeMasterCatalogIdSet(id MCID_TYPE) *MasterCatalogIdSet {
-	return &MasterCatalogIdSet{
-		[]*MasterCatalogId{NewMasterCatalogId(id)},
-	}
-}
-
-// Compare for equality against another MasterCatalogIdSet.
-func (mcidset *MasterCatalogIdSet) Equals(other *MasterCatalogIdSet) bool {
-	if other == nil {return false}
-	if len(mcidset.set) != len(other.set) {return false}
-	result := false
-	for i, mcid := range mcidset.set {
-		result = result && (mcid.Equals(other.set[i]))
-	}
-	return result
-}
-
-// Return string representation of a MasterCatalogIdSet.
-func (mcidset *MasterCatalogIdSet) String() string {
-	result := "["
-	for i, mcid := range mcidset.set {
-		if i > 0 {result += ","}
-		result += fmt.Sprintf("%s", mcid.String())
-	}
-	return result + "]"
-}
-
-// Return a byte slice with a MasterCatalogIdSet packed ready for file writing.
-func (mcidset *MasterCatalogIdSet) Pack(debug *DebugLogger) []byte {
-	bfr := new(bytes.Buffer)
-	binary.Write(bfr, BIGEND, LBTYPE_MCID_SET)
-	for _, mcid := range mcidset.set {
-		binary.Write(bfr, BIGEND, mcid.id)
-	}
-	return bfr.Bytes()
-}
-
-func (mcidset *MasterCatalogIdSet) ToBytes(debug *DebugLogger) []byte {
-	bfr := new(bytes.Buffer)
-	for _, mcid := range mcidset.set {
-		binary.Write(bfr, BIGEND, mcid.id)
-	}
-	return bfr.Bytes()
-}
-
-// Read the parent MCID set, which is always the last section of the buffer.
-func (mcidset *MasterCatalogIdSet) FromBytes(bfr *bytes.Buffer, debug *DebugLogger) (err error) {
-	rem := bfr.Len() % int(MCID_TYPE_SIZE)
-	if rem > 0 {
-		err = debug.Error(FmtErrPartialMCIDSet(bfr.Len(), MCID_TYPE_SIZE))
-		return
-	}
-	n := bfr.Len() / int(MCID_TYPE_SIZE)
-	var id MCID_TYPE
-	mcidset.set = make([]*MasterCatalogId, n)
-	for i := 0; i < n; i++ {
-		err = debug.Error(binary.Read(bfr, BIGEND, &id))
-		mcidset.set[i] = NewMasterCatalogId(id)
-		if err != nil {break}
-	}
-	return
-}
-
-// Does the set contain the given MCID?
-func (mcidset *MasterCatalogIdSet) Contains(othermcid *MasterCatalogId) bool {
-	for _, mcid := range mcidset.set {
-		if othermcid.Equals(mcid) {return true}
-	}
-	return false
-}
-
-// Append given MCID to set if it is not already present.
-func (mcidset *MasterCatalogIdSet) Add(othermcid *MasterCatalogId) {
-	for _, mcid := range mcidset.set {
-		if othermcid.Equals(mcid) {return} // Already exists
-	}
-	mcidset.set = append(mcidset.set, othermcid)
-	return
-}
-
 // Node.
 
-func (node *Node) SetId(id MCID_TYPE) {
-	node.mcid = NewMasterCatalogId(id)
+func (node *Node) SetId(id CATID_TYPE) {
+	node.cid = NewCatalogId(id)
 	return
 }
 
@@ -259,19 +107,19 @@ func (node *Node) ReadSizedBytes(bfr *bytes.Buffer) (byts []byte, err error) {
     return
 }
 
-// Read the parent MCID set, which is always the last section of the buffer.
-func (node *Node) ReadMCIDSet(bfr *bytes.Buffer) (err error) {
-	rem := bfr.Len() % int(MCID_TYPE_SIZE)
+// Read the parent CATID set, which is always the last section of the buffer.
+func (node *Node) ReadCATIDSet(bfr *bytes.Buffer) (err error) {
+	rem := bfr.Len() % int(CATID_TYPE_SIZE)
 	if rem > 0 {
-		err = node.debug.Error(FmtErrPartialMCIDSet(bfr.Len(), MCID_TYPE_SIZE))
+		err = node.debug.Error(FmtErrPartialCATIDSet(bfr.Len(), CATID_TYPE_SIZE))
 		return
 	}
-	n := bfr.Len() / int(MCID_TYPE_SIZE)
-	var id MCID_TYPE
-	node.parents.set = make([]*MasterCatalogId, n)
+	n := bfr.Len() / int(CATID_TYPE_SIZE)
+	var id CATID_TYPE
+	node.parents.set = make([]*CatalogId, n)
 	for i := 0; i < n; i++ {
 		err = node.debug.Error(binary.Read(bfr, BIGEND, &id))
-		node.parents.set[i] = NewMasterCatalogId(id)
+		node.parents.set[i] = NewCatalogId(id)
 		if err != nil {break}
 	}
 	return
@@ -280,11 +128,11 @@ func (node *Node) ReadMCIDSet(bfr *bytes.Buffer) (err error) {
 // Return a byte slice with a Node packed ready for file writing.
 func (node *Node) Pack() []byte {
 	bfr := new(bytes.Buffer)
-	// Write MCID
-	binary.Write(bfr, BIGEND, LBTYPE_MCID)
+	// Write CATID
+	binary.Write(bfr, BIGEND, LBTYPE_CATID)
 	binary.Write(bfr, BIGEND, node.Id())
-	// Write Master Catalog string key
-	binary.Write(bfr, BIGEND, LBTYPE_MCK)
+	// Write  Catalog string key
+	binary.Write(bfr, BIGEND, LBTYPE_CATKEY)
 	ksz := AsLBUINT(len(node.Name()))
 	binary.Write(bfr, BIGEND, ksz)
 	bfr.Write([]byte(node.Name()))
@@ -297,9 +145,9 @@ func (node *Node) Pack() []byte {
 	} else {
 		binary.Write(bfr, BIGEND, LBTYPE_NIL)
 	}
-	// Write parents MCID set
+	// Write parents CATID set
 	if node.HasParents() > 0 {
-		binary.Write(bfr, BIGEND, LBTYPE_MCID_SET)
+		binary.Write(bfr, BIGEND, LBTYPE_CATID_SET)
 		byts := node.parents.ToBytes(node.debug)
 		binary.Write(bfr, BIGEND, AsLBUINT(len(byts)))
 		bfr.Write(byts)
@@ -311,15 +159,15 @@ func (node *Node) Pack() []byte {
 
 // Unpack Node bytes.
 func (node *Node) FromBytes(bfr *bytes.Buffer) (error) {
-	// Read MCID
-	_, err := node.ReadCheckType(bfr, LBTYPE_MCID, false, "mcid") // read LBTYPE
+	// Read CATID
+	_, err := node.ReadCheckType(bfr, LBTYPE_CATID, false, "cid") // read LBTYPE
     if err != nil {return err}
-	var id MCID_TYPE
-	err = node.debug.Error(binary.Read(bfr, BIGEND, &id)) // read MCID
+	var id CATID_TYPE
+	err = node.debug.Error(binary.Read(bfr, BIGEND, &id)) // read CATID
 	node.SetId(id)
     if err != nil {return err}
-	// Read Master Catalog string key
-	_, err = node.ReadCheckType(bfr, LBTYPE_MCK, false, "name") // read LBTYPE
+	// Read  Catalog string key
+	_, err = node.ReadCheckType(bfr, LBTYPE_CATKEY, false, "name") // read LBTYPE
     if err != nil {return err}
 	kbyts, err := node.ReadSizedBytes(bfr) // read name key
     if err != nil {return err}
@@ -334,8 +182,8 @@ func (node *Node) FromBytes(bfr *bytes.Buffer) (error) {
 		if err != nil {return err}
 		node.FieldMap.FromBytes(bytes.NewBuffer(fbyts), node.debug)
 	}
-	// Read parents MCID set (can be LBTYPE_NIL)
-	typ, err = node.ReadCheckType(bfr, LBTYPE_MCID_SET, true, "parents set") // read LBTYPE
+	// Read parents CATID set (can be LBTYPE_NIL)
+	typ, err = node.ReadCheckType(bfr, LBTYPE_CATID_SET, true, "parents set") // read LBTYPE
     if err != nil {return err}
 	if typ != LBTYPE_NIL {
 		pbyts, err := node.ReadSizedBytes(bfr) // read field map bytes
@@ -349,7 +197,7 @@ func (node *Node) FromBytes(bfr *bytes.Buffer) (error) {
 func MintNode(ntype LBTYPE) *Node {
 	return &Node{
 		ntype:		ntype,
-		parents:	NewMasterCatalogIdSet(),
+		parents:	NewCatalogIdSet(),
 		debug:		ScreenLogger,
 		FieldMap:	NewFieldMap(),
 	}
@@ -361,7 +209,7 @@ func MakeNode(name string, ntype LBTYPE, debug *DebugLogger) *Node {
 		return &Node{
 			name:		name,
 			ntype:		ntype,
-			parents:	NewMasterCatalogIdSet(),
+			parents:	NewCatalogIdSet(),
 			debug:		debug,
 			FieldMap:	NewFieldMap(),
 		}
@@ -385,19 +233,19 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 	if vbyts == nil && create {
 		// A new node
 		node = MakeNode(name, ntype, lbase.debug)
-		node.SetId(GetAndIncNextMCID())
+		node.SetId(lbase.MasterCatalog().PopNextId())
 	} else {
 		exists = true
 		node = MakeNode(name, ntype, lbase.debug)
 		// Read existing node data
-		if vtype != LBTYPE_MCID {
+		if vtype != LBTYPE_CATID {
 			err = lbase.debug.Error(FmtErrBadType(
 				"Found record in logbase %s for node %q with type %v, " +
 				"but should be type %v",
-				lbase.name, name, vtype, LBTYPE_MCID))
+				lbase.name, name, vtype, LBTYPE_CATID))
 			return
 		}
-		id, err1 := BYTES(vbyts).ToIdKey(lbase.debug)
+		id, err1 := BytesToCatalogId(vbyts, lbase.debug)
 		if err1 != nil {err = err1; return}
 		vbyts, vtype, err = lbase.Get(id)
 		if vbyts == nil {
@@ -406,7 +254,7 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 		}
 		if vtype != ntype {
 			err = lbase.debug.Error(FmtErrBadType(
-				"Found record %v in logbase %s for node %q via MCID %v " +
+				"Found record %v in logbase %s for node %q via CATID %v " +
 				"with type %v, but should be type %v",
 				vbyts, lbase.name, name, id, vtype, ntype))
 			return
@@ -416,31 +264,33 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 	return
 }
 
-// Save two records, the first maps the node MCID to its complete binary
+// Save two records, the first maps the node CATID to its complete binary
 // representation, the second maps the name string to the parents set.
 func (node *Node) Save(lbase *Logbase) error {
 	lbase.debug.Basic("Saving %q to logbase %s", node.Name(), lbase.Name())
-	_, err := lbase.Put(node.MCID().id, node.Pack(), LBTYPE_KIND)
+	_, err := lbase.Put(node.CATID().id, node.Pack(), LBTYPE_KIND)
 	if node.debug.Error(err) != nil {return err}
-	_, err = lbase.Put(node.Name(), node.MCID().ToBytes(node.debug), LBTYPE_MCID)
+	_, err = lbase.Put(node.Name(), node.CATID().ToBytes(node.debug), LBTYPE_CATID)
 	return node.debug.Error(err)
 }
 
 func (node *Node) String() string {
 	return fmt.Sprintf("{%q %v %v %v}",
 		node.Name(),
-		node.MCID(),
+		node.CATID(),
 		node.GetFieldMap(),
 		node.Parents())
 }
 
-func (node *Node) MCID() *MasterCatalogId {return node.mcid}
-func (node *Node) Id() MCID_TYPE {return node.mcid.id}
+// Getters.
+
+func (node *Node) CATID() *CatalogId {return node.cid}
+func (node *Node) Id() CATID_TYPE {return node.cid.id}
 func (node *Node) NodeType() LBTYPE {return node.ntype}
 func (node *Node) Name() string {return node.name}
 func (node *Node) Fields() map[string]*Field {return node.FieldMap.fields}
 func (node *Node) GetFieldMap() *FieldMap {return node.FieldMap}
-func (node *Node) Parents() *MasterCatalogIdSet {return node.parents}
+func (node *Node) Parents() *CatalogIdSet {return node.parents}
 
 // A Node can only have parents of type Kind.
 func (node *Node) AddParent(parent *Node) *Node {
@@ -448,7 +298,7 @@ func (node *Node) AddParent(parent *Node) *Node {
 		node.debug.Error(FmtErrBadType(
 			"Only a node of LBTYPE_KIND can be a parent, nothing done"))
 	} else {
-		node.parents.Add(parent.MCID())
+		node.parents.Add(parent.CATID())
 	}
 	return node
 }
@@ -459,7 +309,7 @@ func (node *Node) OfKind(parent *Node) *Node {
 }
 
 func (node *Node) HasParent(parent *Node) bool {
-	return node.Parents().Contains(parent.MCID())
+	return node.Parents().Contains(parent.CATID())
 }
 
 func (node *Node) HasParents() int {
@@ -625,7 +475,7 @@ func (lbase *Logbase) FindOfKind(name string, ntype LBTYPE) []*Node {
 		if typ == ntype {
 			node, _, err := lbase.NewNode(basename, ntype, true)
 			lbase.debug.Error(err)
-			if err == nil && node.Parents().Contains(kind.MCID()) {
+			if err == nil && node.Parents().Contains(kind.CATID()) {
 				result = append(result, node)
 			}
 		}
@@ -639,47 +489,4 @@ func (lbase *Logbase) FindKindOfKind(name string) []*Node {
 
 func (lbase *Logbase) FindDocOfKind(name string) []*Node {
 	return lbase.FindOfKind(name, LBTYPE_DOC)
-}
-
-// Master Catalog id counter.
-
-// Reset the next MCID to the minimum value.
-func ResetMCID() {
-	nextMCID = MCID_MIN
-	return
-}
-
-// Increment the MCID counter by one.
-func IncMCID() MCID_TYPE {
-	nextMCID = nextMCID + 1
-	return nextMCID
-}
-
-// Getter for next MCID counter value.
-func GetNextMCID() MCID_TYPE {return nextMCID}
-
-// Get and increment next MCID counter value.
-func GetAndIncNextMCID() MCID_TYPE {
-	n := nextMCID
-	IncMCID()
-	return n
-}
-
-// Test whether the given key value is of type MCID_TYPE.
-func IsMCID(key interface{}) bool {
-	_, isMCID := key.(MCID_TYPE)
-	if isMCID {return true}
-	return false
-}
-
-// If the given key value is of the correct type, increment the MCID counter.
-func SetNextMCID(key interface{}) {
-	if mcid, isMCID := key.(MCID_TYPE); isMCID {
-		nextMCID = mcid + 1
-	}
-	return
-}
-
-func (lbase *Logbase) InitDocCat() {
-	return
 }

@@ -178,10 +178,10 @@ func FmtErrPositionExceedsFileSize(path string, pos, size int) *AppError {
 		pos, path, size)
 }
 
-func FmtErrPartialMCIDSet(size, divisor int) *AppError {
+func FmtErrPartialCATIDSet(size, divisor int) *AppError {
 	return fmtErrDataSize(
-		"The MCID set has byte length %d which is " +
-		"not a multiple of the MCID type size of %d",
+		"The CATID set has byte length %d which is " +
+		"not a multiple of the CATID type size of %d",
 		size, divisor)
 }
 

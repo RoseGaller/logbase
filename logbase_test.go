@@ -20,7 +20,7 @@ var lbtest string
 var lbase *Logbase = setupLogbase()
 var k, v []string
 var pair int = 0
-var mc *MasterCatalog
+var mc *Catalog
 var zm *Zapmap
 
 // Put and get a key-value pair into a virgin logbase.
@@ -40,7 +40,7 @@ func TestSaveRetrieveKeyValue2(t *testing.T) {
 func TestSaveRetrieveKeyValue3(t *testing.T) {
 	pair++
 	saveRetrieveKeyValue(k[pair], v[pair], t)
-	mcr := make([]MasterCatalogRecord, 3)
+	mcr := make([]CatalogRecord, 3)
 	mcr[0] = lbase.mcat.Get(k[pair])
 	saveRetrieveKeyValue(k[pair], v[pair], t)
 	mcr[1] = lbase.mcat.Get(k[pair])
@@ -48,7 +48,7 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 	saveRetrieveKeyValue(k[pair], v[pair], t)
 	mcr[2] = lbase.mcat.Get(k[pair])
 	//dumpIndex(lbase.livelog.indexfile)
-	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 	lbase.debug.DumpZapmap(lbase)
 	err := lbase.Save()
 	if err != nil {
@@ -118,8 +118,8 @@ func TestNewDocs(t *testing.T) {
 	frog.SetFieldWithType("name", "Oscar", LBTYPE_STRING)
 	green, _, err := lbase.GetKind("Green")
 	if err != nil {t.Fatalf("Problem retrieving kind %q: %s", green.Name(), err)}
-	frog.SetFieldWithType("colour", green.Id(), LBTYPE_MCID)
-	frog.SetFieldWithType("owner", george.Id(), LBTYPE_MCID)
+	frog.SetFieldWithType("colour", green.Id(), LBTYPE_CATID)
+	frog.SetFieldWithType("owner", george.Id(), LBTYPE_CATID)
 	err = frog.Save(lbase)
 	if err != nil {t.Fatalf("Problem saving doc %q: %s", frog.Name(), err)}
 
@@ -128,14 +128,14 @@ func TestNewDocs(t *testing.T) {
 	dog.OfKind(animal)
 	dog.SetFieldWithType("name", "Fido", LBTYPE_STRING)
 	dog.SetFieldWithType("eyes", uint8(2), LBTYPE_UINT8)
-	dog.SetFieldWithType("owner", george.Id(), LBTYPE_MCID)
+	dog.SetFieldWithType("owner", george.Id(), LBTYPE_CATID)
 	err = dog.Save(lbase)
 	if err != nil {t.Fatalf("Problem saving doc %q: %s", dog.Name(), err)}
 
 	err = george.Save(lbase)
 	if err != nil {t.Fatalf("Problem creating doc %q: %s", george.Name(), err)}
 
-	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 }
 
 // Re-initialise the logbase and ensure that the master catalog and zapmap are
@@ -147,10 +147,10 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 	}
 	mc = lbase.mcat
 	zm = lbase.zmap
-	lbase.mcat = NewMasterCatalog()
+	lbase.mcat = MakeCatalog(MASTER_CATALOG_NAME, lbase.debug)
 	lbase.zmap = NewZapmap()
 	lbase.Init(user, passhash)
-	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 	lbase.debug.DumpZapmap(lbase)
 	if len(lbase.mcat.index) != len(mc.index) {
 		t.Fatalf(
@@ -198,10 +198,10 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
 	path = lbase.zmap.file.abspath
 	err = os.RemoveAll(path)
 	if err != nil {WrapError("Trouble deleting dir " + path, err).Fatal()}
-	lbase.mcat = NewMasterCatalog()
+	lbase.mcat = MakeCatalog(MASTER_CATALOG_NAME, lbase.debug)
 	lbase.zmap = NewZapmap()
 	lbase.Init(user, passhash)
-	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 	lbase.debug.DumpZapmap(lbase)
 	if len(lbase.mcat.index) != len(mc.index) {
 		t.Fatalf(
@@ -327,9 +327,9 @@ func TestLoadedKinds(t *testing.T) {
 	colour, exists, err := lbase.Kind("Colour")
 	if err != nil {t.Fatalf("Problem creating kind %q: %s", colour.Name(), err)}
 	if !exists {t.Fatalf("The kind %q was not found", colour.Name())}
-	if colour.MCID().id != MCID_MIN {
-		t.Fatalf("The kind %q should have MCID %v but instead has %v",
-			colour.Name(), MCID_MIN, colour.MCID())
+	if colour.CATID().id != CATID_MIN {
+		t.Fatalf("The kind %q should have CATID %v but instead has %v",
+			colour.Name(), CATID_MIN, colour.CATID())
 	}
 
 	green, exists, err := lbase.Kind("Green")
@@ -352,7 +352,7 @@ func TestFind(t *testing.T) {
 	for _, node := range colours {
 		lbase.debug.Check("%v", node)
 	}
-	lbase.debug.DumpMasterCatalog(lbase)
+	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 }
 
 // SUPPORT FUNCTIONS ==========================================================
@@ -369,16 +369,6 @@ func setupLogbase() (lb *Logbase) {
 		WrapError("Could not create test logbase", err).Fatal()
 	}
 	lb.config.LOGFILE_MAXBYTES = logfile_maxbytes
-	return
-}
-
-// Dump the file register.
-func dumpFileReg() {
-	files := lbase.freg.StringArray()
-	lbase.debug.Fine("Dumping file register:")
-	for _, file := range files {
-		lbase.debug.Fine(" " + file)
-	}
 	return
 }
 

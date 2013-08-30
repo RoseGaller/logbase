@@ -97,14 +97,6 @@ import (
 	"path/filepath"
 )
 
-const (
-	APPNAME         string = "Logbase"
-	CONFIG_FILENAME string = "logbase.cfg"
-	MASTER_FILENAME string = ".master"
-	ZAPMAP_FILENAME string = ".zapmap"
-	PERMISSIONS_DIR_NAME string = "users"
-)
-
 // Logbase database instance.
 type Logbase struct {
 	name        string // Logbase name
@@ -113,29 +105,52 @@ type Logbase struct {
 	config      *LogbaseConfiguration
 	debug       *DebugLogger
 	livelog     *Logfile // The current (live) log file
-	freg        *FileRegister
-	mcat        *MasterCatalog
+	mcat        *Catalog
 	zmap        *Zapmap
 	users		*Users
+	catcache    *Cache  // CatalogCache cache
+	filecache   *Cache  // File cache
+	nodecache   *Cache  // Node cache
 }
+
+// Getters.
+
+func (lbase *Logbase) Name() string {return lbase.name}
+func (lbase *Logbase) AbsPath() string {return lbase.abspath}
+func (lbase *Logbase) PermissionsDir() string {return lbase.permdir}
+func (lbase *Logbase) Config() *LogbaseConfiguration {return lbase.config}
+func (lbase *Logbase) Debug() *DebugLogger {return lbase.debug}
+func (lbase *Logbase) Livelog() *Logfile {return lbase.livelog}
+func (lbase *Logbase) MasterCatalog() *Catalog {return lbase.mcat}
+func (lbase *Logbase) Zapmap() *Zapmap {return lbase.zmap}
+func (lbase *Logbase) Users() *Users {return lbase.users}
+func (lbase *Logbase) CatalogCache() *Cache {return lbase.catcache}
+func (lbase *Logbase) FileCache() *Cache {return lbase.filecache}
+func (lbase *Logbase) NodeCache() *Cache {return lbase.nodecache}
 
 // Make a new Logbase instance based on the given directory path.
 func MakeLogbase(abspath string, debug *DebugLogger) *Logbase {
-	lbase := NewLogbase()
+	lbase := NewLogbase(debug)
 	lbase.name = filepath.Base(abspath)
 	lbase.abspath = abspath
 	lbase.permdir = PERMISSIONS_DIR_NAME
 	lbase.debug = debug
+	// Master Catalog
+	lbase.mcat.update = true
+	lbase.mcat.autosave = true
+	lbase.catcache.Put(lbase.mcat.Name(), lbase.mcat)
 	return lbase
 }
 
 // Initialise embedded fields.
-func NewLogbase() *Logbase {
+func NewLogbase(debug *DebugLogger) *Logbase {
 	return &Logbase{
-	    freg:   NewFileRegister(),
-	    mcat:   NewMasterCatalog(),
-	    zmap:   NewZapmap(),
-		users:	NewUsers(),
+	    mcat:		MakeCatalog(MASTER_CATALOG_NAME, debug),
+	    zmap:		NewZapmap(),
+		users:		NewUsers(),
+	    catcache:	NewCache(),
+	    filecache:	NewCache(),
+	    nodecache:	NewCache(),
 	}
 }
 
@@ -146,7 +161,7 @@ type LogbaseConfiguration struct {
 	LOGFILE_NAME_EXTENSION  string // Postfix for binary data log file names
 	INDEXFILE_NAME_EXTENSION string // Postfix for binary "hint" file names
 	LOGFILE_MAXBYTES        int // Size of live log file before spawning a new one
-	// Usually the Master Catalog holds only value locations, but if the
+	// Usually a Catalog holds only value locations, but if the
 	// value is small enough, we can also keep it in RAM for speed 
 	CACHE_VALUES			bool
 	CACHE_VALUE_MAXSIZE		int
@@ -206,11 +221,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	lbase.config = config
 
 	// Wire up the Master and Zapmap files
-	var mfile *File
-	mfile, err = lbase.GetFile(MASTER_FILENAME)
-	lbase.debug.Error(err)
-	mfile.Touch()
-	lbase.mcat.file = NewMasterfile(mfile)
+	lbase.debug.Error(lbase.mcat.InitFile(lbase))
 	var zfile *File
 	zfile, err = lbase.GetFile(ZAPMAP_FILENAME)
 	lbase.debug.Error(err)
@@ -231,7 +242,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	}
 
 	if buildmasterzap {
-		ResetMCID()
+		lbase.mcat.ResetId()
 		lbase.debug.Advise(
 			"Could not find or load master and zapmap files, " +
 			"build from index files...")
@@ -269,7 +280,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 			if lbase.debug.Error(err) != nil {return err}
 			for _, irec := range lfindex.list {
 				key, vloc := lbase.UpdateZapmap(irec, fnum)
-				lbase.UpdateMasterCatalog(key, vloc)
+				lbase.mcat.Update(key, vloc)
 			}
 		}
 	}
@@ -281,13 +292,21 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	err = lbase.InitSecurity(user, passhash)
 	if err != nil {return err}
 
+	// Load other Catalogs
+	catnames, err := lbase.GetCatalogNames()
+	if len(catnames) > 0 {
+		for _, name := range catnames {
+			lbase.GetCatalog(name)
+		}
+	}
+
 	lbase.debug.Advise("Completed init of logbase %q", lbase.name)
 	return nil
 }
 
 // Save the key-value pair in the live log.  Handles the value type
 // prepend into the value bytes.
-func (lbase *Logbase) Put(key interface{}, vbyts []byte, vtype LBTYPE) (MasterCatalogRecord, error) {
+func (lbase *Logbase) Put(key interface{}, vbyts []byte, vtype LBTYPE) (CatalogRecord, error) {
 	if lbase.debug.GetLevel() > DEBUGLEVEL_ADVISE {
 		lbase.debug.Basic(
 			"Putting (%v,%s) into logbase %s",
@@ -308,12 +327,12 @@ func (lbase *Logbase) Put(key interface{}, vbyts []byte, vtype LBTYPE) (MasterCa
 		_, vloc := lbase.UpdateZapmap(irec, lbase.livelog.fnum)
 
 		// Update Master Catalog in RAM with value or its location
-		var mcr MasterCatalogRecord
+		var mcr CatalogRecord
 		if lbase.config.CACHE_VALUES && lbase.OkToCacheValue(vbyts, vtype) {
 			v := vloc.ToValue(vbyts, vtype)
-			mcr = lbase.UpdateMasterCatalog(key, v)
+			mcr = lbase.mcat.Update(key, v)
 		} else {
-			mcr = lbase.UpdateMasterCatalog(key, vloc)
+			mcr = lbase.mcat.Update(key, vloc)
 		}
 		return mcr, nil
 	}
@@ -358,5 +377,3 @@ func (lbase *Logbase) Zap(bufsz LBUINT) error {
 	}
 	return nil
 }
-
-func (lbase *Logbase) Name() string {return lbase.name}

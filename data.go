@@ -211,17 +211,6 @@ func NewRecordLocation() *RecordLocation {
 	}
 }
 
-// Define a record used in the logbase master key index.
-// Current implementors:
-//  Value
-//  ValueLocation
-type MasterCatalogRecord interface {
-	Equals(other MasterCatalogRecord) bool
-	String() string
-	ToValueLocation() *ValueLocation
-	ReadVal(lbase *Logbase) (val []byte, vtype LBTYPE, err error)
-}
-
 // Identify a logfile record for zapping.
 type ZapRecord struct {
 	*RecordLocation
@@ -253,21 +242,6 @@ func ValueLocationBytes() LBUINT {return VALOC_SIZE}
 //  Index of all key-value pairs in a log file.
 type Index struct {
 	list    []*IndexRecord
-}
-
-//  Master catalog of all live (not stale) key-value pairs.
-type MasterCatalog struct {
-	index   map[interface{}]MasterCatalogRecord // The in-memory index
-	file    *Masterfile
-	sync.RWMutex
-	changed	bool // Has index changed since last save?
-}
-
-// Init a MasterCatalog.
-func NewMasterCatalog() *MasterCatalog {
-	return &MasterCatalog{
-		index: make(map[interface{}]MasterCatalogRecord),
-	}
 }
 
 //  Stale key-value pairs scheduled to be deleted from log files.
@@ -335,39 +309,6 @@ func (lbase *Logbase) UpdateZapmap(irec *IndexRecord, fnum LBUINT) (interface{},
 	}
 
 	return key, newvloc
-}
-
-// Update the Master Catalog.
-func (lbase *Logbase) UpdateMasterCatalog(key interface{}, mcr MasterCatalogRecord) MasterCatalogRecord {
-	lbase.mcat.Put(key, mcr)
-	SetNextMCID(key)
-	return mcr
-}
-
-// Gateway for reading from master catalog.
-func (mcat *MasterCatalog) Get(key interface{}) MasterCatalogRecord {
-	mcat.RLock() // other reads ok
-	mcr := mcat.index[key]
-	mcat.RUnlock()
-	return mcr
-}
-
-// Gateway for writing to master catalog.
-func (mcat *MasterCatalog) Put(key interface{}, mcr MasterCatalogRecord) {
-	mcat.Lock()
-	mcat.index[key] = mcr
-	mcat.Unlock()
-	mcat.changed = true
-	return
-}
-
-// Gateway for removing entkey,ire entry from master catalog.
-func (mcat *MasterCatalog) Delete(key interface{}) {
-	mcat.Lock()
-	delete(mcat.index, key)
-	mcat.Unlock()
-	mcat.changed = true
-	return
 }
 
 // Gateway for reading from zapmap.
@@ -443,23 +384,6 @@ func (rec *GenericRecord) LocationListLength() int {
 }
 
 // Comparison.
-
-// Compare for equality against MasterCatalogRecord interface.
-func (vloc *ValueLocation) Equals(other MasterCatalogRecord) bool {
-	if other == nil {return false}
-	if othervloc, ok := other.(*ValueLocation); ok {
-		return (vloc.fnum == othervloc.fnum &&
-			vloc.vsz == othervloc.vsz &&
-			vloc.vpos == othervloc.vpos)
-	}
-	return false
-}
-
-// Compare for equality against MasterCatalogRecord interface.
-func (val *Value) Equals(other MasterCatalogRecord) bool {
-	if other == nil {return false}
-	return val.ValueLocation.Equals(other.ToValueLocation())
-}
 
 // Compare for equality against another ZapRecord.
 func (zrec *ZapRecord) Equals(other *ZapRecord) bool {
@@ -984,6 +908,7 @@ func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
 	return
 }
 
+// Encode a Go object into bytes.
 func Gobify(param interface{}, debug *DebugLogger) []byte {
 	var bfr bytes.Buffer
 	enc := gob.NewEncoder(&bfr)
@@ -992,6 +917,7 @@ func Gobify(param interface{}, debug *DebugLogger) []byte {
 	return bfr.Bytes()
 }
 
+// Decode bytes into the given Go object.
 func Degobify(byts []byte, param interface{}, debug *DebugLogger) {
 	var bfr bytes.Buffer
 	dec := gob.NewDecoder(&bfr)

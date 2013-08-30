@@ -288,10 +288,10 @@ func FmtHexString(b []byte) string {
 	return buf.String()
 }
 
-func (debug *DebugLogger) DumpMasterCatalog(lbase *Logbase) {
-	debug.Advise("Master catalog records:")
-	for key, mcr := range lbase.mcat.index {
-		debug.Advise("%v %s", key, mcr.String())
+func (debug *DebugLogger) DumpCatalog(cat *Catalog) {
+	debug.Advise("Catalog %q records:", cat.Name())
+	for key, cr := range cat.Map() {
+		debug.Advise("%v %s", key, cr.String())
 	}
 }
 
