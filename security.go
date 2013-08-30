@@ -81,12 +81,12 @@ func (lbase *Logbase) InitSecurity(user, passhash string) (err error) {
 		if lbase.debug.Error(err) != nil {return err}
 		for _, name := range usernames {
 			if lbase.IsUser(name) {
-				up := NewUserPermissions(NewReader())
+				up := NewUserPermissions(NewReader(), lbase.debug)
 				ufile, err := lbase.GetUserPermissionFile(name)
 				lbase.debug.Error(err)
 				up.file = NewUserPermissionFile(ufile)
 				if up.file.size > 0 {
-					err = lbase.debug.Error(up.Load(lbase.debug))
+					err = lbase.debug.Error(up.Load())
 					if err != nil {return err}
 					lbase.users.perm[name] = up
 				}
@@ -131,7 +131,7 @@ func (lbase *Logbase) AddUserPermissions(user string, defperm *Permission) (err 
 	// Add user permission file
 	ufile, err := lbase.GetUserPermissionFile(user)
 	lbase.debug.Error(err)
-	up := NewUserPermissions(defperm)
+	up := NewUserPermissions(defperm, lbase.debug)
 	up.file = NewUserPermissionFile(ufile)
 	lbase.users.perm[user] = up
 	//if up.file.size > 0 {
@@ -148,13 +148,13 @@ func (lbase *Logbase) AddUser(user, passhash string, defperm *Permission) (err e
 }
 
 func (lbase *Logbase) IsUser(user string) bool {
-	val, _, _ := lbase.Get(UserPassKey(user))
-	if val == nil {return false}
+	vbyts, _, _, _ := lbase.Get(UserPassKey(user))
+	if vbyts == nil {return false}
     return true
 }
 
 func (lbase *Logbase) IsValidUser(user, passhash string) bool {
-	val, _, _ := lbase.Get(UserPassKey(user))
+	val, _, _, _ := lbase.Get(UserPassKey(user))
 	if val == nil {return false}
 	if string(val) == passhash {return true}
     return false

@@ -317,7 +317,7 @@ func (lbase *Logbase) Save() (err error) {
 	for _, obj := range lbase.catcache.objects {
 		cat := obj.(*Catalog)
 		if cat.autosave && cat.changed {
-			err = lbase.debug.Error(cat.Save(lbase.debug))
+			err = lbase.debug.Error(cat.Save())
 			if err != nil {return}
 			cat.changed = false
 			lbase.debug.Advise("Saved catalog %q for logbase %q",
@@ -325,14 +325,14 @@ func (lbase *Logbase) Save() (err error) {
 		}
 	}
 	if lbase.zmap.changed {
-		err = lbase.debug.Error(lbase.zmap.Save(lbase.debug))
+		err = lbase.debug.Error(lbase.zmap.Save())
 		if err != nil {return}
 		lbase.zmap.changed = false
 		lbase.debug.Advise("Saved zapmap for logbase %q", lbase.name)
 	}
 	for user, perm := range lbase.users.perm {
 		if perm.changed {
-			err = lbase.debug.Error(perm.Save(lbase.debug))
+			err = lbase.debug.Error(perm.Save())
 			if err != nil {return}
 			perm.changed = false
 			lbase.debug.Advise("Saved %q permissions for logbase %q", user, lbase.name)
@@ -586,14 +586,14 @@ func (ifile *Indexfile) Save(lfindex *Index) (err error) {
 // Zapmap file methods.
 
 // Read zap file into a zapmap.
-func (zmap *Zapmap) Load(debug *DebugLogger) (err error) {
+func (zmap *Zapmap) Load() (err error) {
 	zmap.file.Open(READ_ONLY)
 	defer zmap.file.Close()
 	if zmap.file.size == 0 {return}
 	zmap.Lock()
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			key, zrecs := rec.ToZapRecordList(debug)
+			key, zrecs := rec.ToZapRecordList(zmap.debug)
 			zmap.zapmap[key] = zrecs // Don't need to use gateway because zmap is fresh
 		}
 		return nil
@@ -604,13 +604,13 @@ func (zmap *Zapmap) Load(debug *DebugLogger) (err error) {
 }
 
 // Write zapmap file.
-func (zmap *Zapmap) Save(debug *DebugLogger) (err error) {
+func (zmap *Zapmap) Save() (err error) {
 	zmap.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
 	zmap.RLock()
 	for key, zrecs := range zmap.zapmap {
-		nw, err = zmap.file.tmp.LockedWriteAt(PackZapRecord(key, zrecs, debug), pos)
+		nw, err = zmap.file.tmp.LockedWriteAt(PackZapRecord(key, zrecs, zmap.debug), pos)
 		if err != nil {return}
 		pos = pos.Plus(nw)
 	}
@@ -622,8 +622,12 @@ func (zmap *Zapmap) Save(debug *DebugLogger) (err error) {
 
 // Catalog file methods.
 
-// Read catalog file into a new master catalog.
-func (cat *Catalog) Load(debug *DebugLogger) (err error) {
+// Read catalog file into a new catalog. Note that while ValueLocations
+// are stored on file (possibly duplicating the data references in
+// the Master Catalog and possibly others), in memory we use pointers to
+// the Value or ValueLocation found in the Master Catalog.
+func (cat *Catalog) Load(lbase *Logbase) (err error) {
+	if cat.file == nil {return cat.debug.Error(FmtErrFileNotDefined(cat))}
 	cat.ResetId()
 	cat.file.Open(READ_ONLY)
 	defer cat.file.Close()
@@ -631,9 +635,29 @@ func (cat *Catalog) Load(debug *DebugLogger) (err error) {
 	cat.Lock()
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			key, vloc := rec.ToValueLocation(debug)
-			cat.index[key] = vloc // Don't need to use gateway because cat is fresh
-			cat.SetNextId(key) // Increment the NextMCI if necessary 
+			key, vloc := rec.ToValueLocation(cat.debug)
+			if cat.ismaster {
+				cat.index[key] = vloc // Don't need to use gateway because cat is fresh
+				cat.SetNextId(key) // Increment the counter if key is of right type
+			} else {
+				mcr := lbase.mcat.Get(key)
+                if mcr == nil {
+					// The key must be in the Master Catalog...
+					cat.debug.Error(FmtErrUnknownCatalogKey(key, cat.Name()))
+				} else {
+                    // ...and the ValueLocations must match
+					oldvloc := mcr.ToValueLocation()
+					if !vloc.Equals(oldvloc) {
+						cat.debug.Error(FmtErrDataMismatch(
+							"ValueLocation %v for key %v in catalog %q on file " +
+							"does not match the Master Catalog ValueLocation %v",
+							vloc, key, cat.Name(), oldvloc))
+					} else {
+						// Everything checks out, use the existing pointer
+						cat.index[key] = oldvloc
+					}
+				}
+			}
 		}
 		return nil
 	}
@@ -644,7 +668,8 @@ func (cat *Catalog) Load(debug *DebugLogger) (err error) {
 
 // Write catalog file.  Even though the catalog can contain values in RAM,
 // we only write the value locations to file.
-func (cat *Catalog) Save(debug *DebugLogger) (err error) {
+func (cat *Catalog) Save() (err error) {
+	if cat.file == nil {return cat.debug.Error(FmtErrFileNotDefined(cat))}
 	cat.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
@@ -657,7 +682,7 @@ func (cat *Catalog) Save(debug *DebugLogger) (err error) {
 		case *Value:
 			vloc = r.ValueLocation
 		}
-		nw, err = cat.file.tmp.LockedWriteAt(vloc.Pack(key, debug), pos)
+		nw, err = cat.file.tmp.LockedWriteAt(vloc.Pack(key, cat.debug), pos)
 		if err != nil {return}
 		pos = pos.Plus(nw)
 	}
@@ -670,14 +695,14 @@ func (cat *Catalog) Save(debug *DebugLogger) (err error) {
 // User Permission index file methods.
 
 // Read user permission file into a new user permission index.
-func (up *UserPermissions) Load(debug *DebugLogger) (err error) {
+func (up *UserPermissions) Load() (err error) {
 	up.file.Open(READ_ONLY)
 	defer up.file.Close()
 	if up.file.size == 0 {return}
 	up.Lock()
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
-			key, upr := rec.ToUserPermissionRecord(debug)
+			key, upr := rec.ToUserPermissionRecord(up.debug)
 			up.index[key] = upr // Don't need to use gateway because up is fresh
 		}
 		return nil
@@ -688,14 +713,14 @@ func (up *UserPermissions) Load(debug *DebugLogger) (err error) {
 }
 
 // Write user permission file.
-func (up *UserPermissions) Save(debug *DebugLogger) (err error) {
+func (up *UserPermissions) Save() (err error) {
 	up.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
 	up.RLock()
 	for key, upr := range up.index {
 		nw, err = up.file.tmp.LockedWriteAt(
-					PackUserPermissionRecord(key, upr, debug), pos)
+					PackUserPermissionRecord(key, upr, up.debug), pos)
 		if err != nil {return}
 		pos = pos.Plus(nw)
 	}

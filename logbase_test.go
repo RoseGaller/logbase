@@ -147,8 +147,9 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 	}
 	mc = lbase.mcat
 	zm = lbase.zmap
-	lbase.mcat = MakeCatalog(MASTER_CATALOG_NAME, lbase.debug)
-	lbase.zmap = NewZapmap()
+	lbase.mcat = MakeMasterCatalog(lbase.debug)
+	lbase.catcache.Put(lbase.mcat.Name(), lbase.mcat)
+	lbase.zmap = MakeZapmap(lbase.debug)
 	lbase.Init(user, passhash)
 	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 	lbase.debug.DumpZapmap(lbase)
@@ -198,8 +199,9 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
 	path = lbase.zmap.file.abspath
 	err = os.RemoveAll(path)
 	if err != nil {WrapError("Trouble deleting dir " + path, err).Fatal()}
-	lbase.mcat = MakeCatalog(MASTER_CATALOG_NAME, lbase.debug)
-	lbase.zmap = NewZapmap()
+	lbase.mcat = MakeMasterCatalog(lbase.debug)
+	lbase.catcache.Put(lbase.mcat.Name(), lbase.mcat)
+	lbase.zmap = MakeZapmap(lbase.debug)
 	lbase.Init(user, passhash)
 	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 	lbase.debug.DumpZapmap(lbase)
@@ -352,6 +354,12 @@ func TestFind(t *testing.T) {
 	for _, node := range colours {
 		lbase.debug.Check("%v", node)
 	}
+	catColours := lbase.AsCatalog(colours)
+	catColours.InitFile(lbase)
+	err := catColours.Save()
+	if err != nil {
+		t.Fatalf("Problem saving catalog %q: %s", catColours.Name(), err)
+	}
 	lbase.debug.DumpCatalog(lbase.MasterCatalog())
 }
 
@@ -412,7 +420,7 @@ func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
 		t.Fatalf("Could not put key value pair into test logbase: %s", err)
 	}
 
-	got, vtype, err := lbase.Get(key)
+	got, vtype, _, err := lbase.Get(key)
 	if err != nil {
 		t.Fatalf("Could not get key value pair from test logbase: %s", err)
 	}

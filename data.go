@@ -250,12 +250,15 @@ type Zapmap struct {
 	file    *Zapfile
 	sync.RWMutex
 	changed	bool // Has map changed since last save?
+	debug	*DebugLogger
 }
 
 // Init a Zapmap, which points to stale data scheduled for deletion.
-func NewZapmap() *Zapmap {
+func MakeZapmap(debug *DebugLogger) *Zapmap {
 	return &Zapmap{
-		zapmap: make(map[interface{}][]*ZapRecord),
+		zapmap:		make(map[interface{}][]*ZapRecord),
+		changed:	false,
+		debug:		debug,
 	}
 }
 
@@ -267,7 +270,7 @@ type Users struct {
 // Init a Users object.
 func NewUsers() *Users {
 	return &Users{
-		perm: make(map[string]*UserPermissions),
+		perm:	make(map[string]*UserPermissions),
 	}
 }
 
@@ -278,12 +281,14 @@ type UserPermissions struct {
 	sync.RWMutex
 	pass	string
 	changed	bool // Has index changed since last save?
+	debug	*DebugLogger
 }
 
 // Init a UserPermissions object.
-func NewUserPermissions(p *Permission) *UserPermissions {
+func NewUserPermissions(p *Permission, debug *DebugLogger) *UserPermissions {
 	up := &UserPermissions{
-		index: make(map[interface{}]*UserPermissionRecord),
+		index:	make(map[interface{}]*UserPermissionRecord),
+		debug:  debug,
 	}
 	up.Put(uint8(0), &UserPermissionRecord{p}) // Default
 	return up

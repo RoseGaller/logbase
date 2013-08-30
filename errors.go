@@ -92,10 +92,26 @@ func errKeyMismatch(msg string, jump int) *AppError {
 	return makeAppError(jump).Describe(msg, "key_mismatch")
 }
 
+// Data mismatch.
+
+func FmtErrDataMismatch(msg string, a ...interface{}) *AppError {
+	return errDataMismatch(fmt.Sprintf(msg, a...), 1)
+}
+
+func errDataMismatch(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "data_mismatch")
+}
+
 // Key not found.
 
 func FmtErrKeyNotFound(key interface{}) *AppError {
 	return errKeyNotFound(fmt.Sprintf("Key %v not found.", key), 1)
+}
+
+func FmtErrUnknownCatalogKey(key interface{}, catname string) *AppError {
+	return errKeyNotFound(fmt.Sprintf(
+		"The key %v in catalog %q on file was not found in the Master Catalog",
+		key, catname), 1)
 }
 
 func errKeyNotFound(msg string, jump int) *AppError {
@@ -130,6 +146,11 @@ func FmtErrLiveLogUndefined() *AppError {
 
 func FmtErrFileNotFound(path string) *AppError {
 	return errFileNotFound(fmt.Sprintf("File %q not found.", path), 1)
+}
+
+func FmtErrFileNotDefined(obj interface{}) *AppError {
+	return errFileNotFound(fmt.Sprintf(
+		"File not defined for %T object %q.", obj, obj), 1)
 }
 
 func errFileNotFound(msg string, jump int) *AppError {

@@ -13,10 +13,12 @@ import (
 )
 
 var nextCATID CATID_TYPE = CATID_MIN // A global  catalog record id counter
+var queryCounter int = 0
 
 const (
 	CATALOG_FILENAME_PREFIX string = ".catalog_"
 	CATID_MIN CATID_TYPE = 10 // Allow space for any special records
+	QUERY_NAME_FORMAT string = "query_%06d"
 )
 
 // Define a record used in a logbase k-v map.
@@ -33,6 +35,7 @@ type CatalogRecord interface {
 // Catalog of all live (not stale) key-value pairs.
 type Catalog struct {
 	name		string
+	ismaster	bool // Is this the Master Catalog?
 	index		map[interface{}]CatalogRecord // The in-memory index
 	file		*CatalogFile
 	sync.RWMutex
@@ -46,6 +49,7 @@ type Catalog struct {
 // Getters.
 
 func (cat *Catalog) Name() string {return cat.name}
+func (cat *Catalog) IsMaster() bool {return cat.ismaster}
 func (cat *Catalog) Map() map[interface{}]CatalogRecord {return cat.index}
 func (cat *Catalog) File() *CatalogFile {return cat.file}
 func (cat *Catalog) HasChanged() bool {return cat.changed}
@@ -57,12 +61,36 @@ func (cat *Catalog) AutoSave() bool {return cat.autosave}
 func MakeCatalog(name string, debug *DebugLogger) *Catalog {
 	return &Catalog{
 		name:		name,
+		ismaster:	false,
 		index:		make(map[interface{}]CatalogRecord),
 		update:		false,
 		autosave:	false,
 		debug:		debug,
 	}
 }
+
+func MakeMasterCatalog(debug *DebugLogger) *Catalog {
+	return &Catalog{
+		name:		MASTER_CATALOG_NAME,
+		ismaster:	true,
+		index:		make(map[interface{}]CatalogRecord),
+		update:		true,
+		autosave:	true,
+		debug:		debug,
+	}
+}
+
+func MakeQueryCatalog(debug *DebugLogger) *Catalog {
+	return MakeCatalog(GetNextQueryCatalogName(), debug)
+}
+
+func GetNextQueryCatalogName() string {
+	result := fmt.Sprintf(QUERY_NAME_FORMAT, queryCounter)
+	queryCounter++
+	return result
+}
+
+func (cat *Catalog) String() string {return cat.Name()}
 
 // Return an existing cached Catalog, or assume it must be read from file.
 func (lbase *Logbase) GetCatalog(name string) (*Catalog, error) {
@@ -75,7 +103,7 @@ func (lbase *Logbase) GetCatalog(name string) (*Catalog, error) {
 	cat.update = true
 	cat.autosave = true
 	lbase.CatalogCache().Put(name, cat)
-	return cat, lbase.debug.Error(cat.Load(lbase.debug))
+	return cat, lbase.debug.Error(cat.Load(lbase))
 }
 
 // Initialise a Catalog file.  Not all catalogs need file service.
@@ -92,7 +120,7 @@ func (cat *Catalog) Filename() string {
 	return CATALOG_FILENAME_PREFIX + cat.Name()
 }
 
-// Update the Catalog.
+// Update the Catalog, sort of intended for the Master Catalog only.
 func (cat *Catalog) Update(key interface{}, cr CatalogRecord) CatalogRecord {
 	cat.Put(key, cr)
 	cat.SetNextId(key)

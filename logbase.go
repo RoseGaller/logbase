@@ -135,9 +135,7 @@ func MakeLogbase(abspath string, debug *DebugLogger) *Logbase {
 	lbase.abspath = abspath
 	lbase.permdir = PERMISSIONS_DIR_NAME
 	lbase.debug = debug
-	// Master Catalog
-	lbase.mcat.update = true
-	lbase.mcat.autosave = true
+	// Cache Master Catalog
 	lbase.catcache.Put(lbase.mcat.Name(), lbase.mcat)
 	return lbase
 }
@@ -145,8 +143,8 @@ func MakeLogbase(abspath string, debug *DebugLogger) *Logbase {
 // Initialise embedded fields.
 func NewLogbase(debug *DebugLogger) *Logbase {
 	return &Logbase{
-	    mcat:		MakeCatalog(MASTER_CATALOG_NAME, debug),
-	    zmap:		NewZapmap(),
+	    mcat:		MakeMasterCatalog(debug),
+	    zmap:		MakeZapmap(debug),
 		users:		NewUsers(),
 	    catcache:	NewCache(),
 	    filecache:	NewCache(),
@@ -230,10 +228,10 @@ func (lbase *Logbase) Init(user, passhash string) error {
 
 	var buildmasterzap bool = true
 	if lbase.mcat.file.size > 0 {
-		if lbase.debug.Error(lbase.mcat.Load(lbase.debug)) == nil {
+		if lbase.debug.Error(lbase.mcat.Load(lbase)) == nil {
 			lbase.debug.Advise("Loaded master file")
 			if lbase.zmap.file.size > 0 {
-				if lbase.debug.Error(lbase.zmap.Load(lbase.debug)) == nil {
+				if lbase.debug.Error(lbase.zmap.Load()) == nil {
 					lbase.debug.Advise("Loaded zap file")
 					buildmasterzap = false
 				}
@@ -292,7 +290,9 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	err = lbase.InitSecurity(user, passhash)
 	if err != nil {return err}
 
-	// Load other Catalogs
+	// Load other Catalogs, order important, must be done after
+	// Master Catalog since other catalogs will use pointers to
+	// existing Values or ValueLocations.
 	catnames, err := lbase.GetCatalogNames()
 	if len(catnames) > 0 {
 		for _, name := range catnames {
@@ -341,8 +341,8 @@ func (lbase *Logbase) Put(key interface{}, vbyts []byte, vtype LBTYPE) (CatalogR
 
 // Retrieve the value for the given key.  Snips off the value type
 // prepend from the value bytes.
-func (lbase *Logbase) Get(key interface{}) (vbyts []byte, vtype LBTYPE, err error) {
-	mcr := lbase.mcat.Get(key)
+func (lbase *Logbase) Get(key interface{}) (vbyts []byte, vtype LBTYPE, mcr CatalogRecord, err error) {
+	mcr = lbase.mcat.Get(key)
 	if mcr == nil {
 		err = nil
 		vbyts = nil

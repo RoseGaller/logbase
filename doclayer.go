@@ -65,6 +65,8 @@ type Node struct {
 	parents		*CatalogIdSet
 	ntype		LBTYPE
 	*FieldMap
+	mcr_id		CatalogRecord // Allows us to convert between Node <-> Catalog
+	mcr_name	CatalogRecord // Allows us to convert between Node <-> Catalog
 	debug		*DebugLogger // a small price to pay
 }
 
@@ -78,6 +80,18 @@ type FieldMap struct {
 }
 
 // Node.
+
+// Getters.
+
+func (node *Node) CATID() *CatalogId {return node.cid}
+func (node *Node) Id() CATID_TYPE {return node.cid.id}
+func (node *Node) NodeType() LBTYPE {return node.ntype}
+func (node *Node) Name() string {return node.name}
+func (node *Node) Fields() map[string]*Field {return node.FieldMap.fields}
+func (node *Node) GetFieldMap() *FieldMap {return node.FieldMap}
+func (node *Node) Parents() *CatalogIdSet {return node.parents}
+func (node *Node) GetIdCatalogRecord() CatalogRecord {return node.mcr_id}
+func (node *Node) GetNameCatalogRecord() CatalogRecord {return node.mcr_name}
 
 func (node *Node) SetId(id CATID_TYPE) {
 	node.cid = NewCatalogId(id)
@@ -227,7 +241,7 @@ func NormaliseNodeName(name string, ntype LBTYPE) string {
 
 func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Node, exists bool, err error) {
 	name = NormaliseNodeName(name, ntype)
-	vbyts, vtype, err := lbase.Get(name)
+	vbyts, vtype, mcr_name, err := lbase.Get(name)
 	if err != nil {return}
 	exists = false
 	if vbyts == nil && create {
@@ -247,7 +261,8 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 		}
 		id, err1 := BytesToCatalogId(vbyts, lbase.debug)
 		if err1 != nil {err = err1; return}
-		vbyts, vtype, err = lbase.Get(id)
+		var mcr_id CatalogRecord
+		vbyts, vtype, mcr_id, err = lbase.Get(id)
 		if vbyts == nil {
 			err = lbase.debug.Error(FmtErrKeyNotFound(id))
 			return
@@ -259,6 +274,8 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 				vbyts, lbase.name, name, id, vtype, ntype))
 			return
 		}
+		node.mcr_id = mcr_id
+		node.mcr_name = mcr_name
 		node.FromBytes(bytes.NewBuffer(vbyts))
 	}
 	return
@@ -281,16 +298,6 @@ func (node *Node) String() string {
 		node.GetFieldMap(),
 		node.Parents())
 }
-
-// Getters.
-
-func (node *Node) CATID() *CatalogId {return node.cid}
-func (node *Node) Id() CATID_TYPE {return node.cid.id}
-func (node *Node) NodeType() LBTYPE {return node.ntype}
-func (node *Node) Name() string {return node.name}
-func (node *Node) Fields() map[string]*Field {return node.FieldMap.fields}
-func (node *Node) GetFieldMap() *FieldMap {return node.FieldMap}
-func (node *Node) Parents() *CatalogIdSet {return node.parents}
 
 // A Node can only have parents of type Kind.
 func (node *Node) AddParent(parent *Node) *Node {
@@ -489,4 +496,14 @@ func (lbase *Logbase) FindKindOfKind(name string) []*Node {
 
 func (lbase *Logbase) FindDocOfKind(name string) []*Node {
 	return lbase.FindOfKind(name, LBTYPE_DOC)
+}
+
+func (lbase *Logbase) AsCatalog(nodes []*Node) *Catalog {
+	if len(nodes) == 0 {return nil}
+	cat := MakeQueryCatalog(lbase.debug)
+	for _, node := range nodes {
+		cat.Put(node.name, node.mcr_name)
+		cat.Put(node.cid.id, node.mcr_id)
+	}
+	return cat
 }
