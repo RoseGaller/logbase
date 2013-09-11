@@ -4,6 +4,7 @@
 package logbase
 
 import (
+	"github.com/h00gs/gubed"
 	"bufio"
 	"bytes"
 	"encoding/binary"
@@ -241,7 +242,7 @@ func ValueLocationBytes() LBUINT {return VALOC_SIZE}
 
 //  Index of all key-value pairs in a log file.
 type Index struct {
-	list    []*IndexRecord
+	List    []*IndexRecord
 }
 
 //  Stale key-value pairs scheduled to be deleted from log files.
@@ -250,11 +251,11 @@ type Zapmap struct {
 	file    *Zapfile
 	sync.RWMutex
 	changed	bool // Has map changed since last save?
-	debug	*DebugLogger
+	debug	*gubed.Logger
 }
 
 // Init a Zapmap, which points to stale data scheduled for deletion.
-func MakeZapmap(debug *DebugLogger) *Zapmap {
+func MakeZapmap(debug *gubed.Logger) *Zapmap {
 	return &Zapmap{
 		zapmap:		make(map[interface{}][]*ZapRecord),
 		changed:	false,
@@ -281,11 +282,11 @@ type UserPermissions struct {
 	sync.RWMutex
 	pass	string
 	changed	bool // Has index changed since last save?
-	debug	*DebugLogger
+	debug	*gubed.Logger
 }
 
 // Init a UserPermissions object.
-func NewUserPermissions(p *Permission, debug *DebugLogger) *UserPermissions {
+func NewUserPermissions(p *Permission, debug *gubed.Logger) *UserPermissions {
 	up := &UserPermissions{
 		index:	make(map[interface{}]*UserPermissionRecord),
 		debug:  debug,
@@ -315,6 +316,11 @@ func (lbase *Logbase) UpdateZapmap(irec *IndexRecord, fnum LBUINT) (interface{},
 
 	return key, newvloc
 }
+
+// Zapmap methods.
+
+// Getters.
+func (zmap *Zapmap) Map() map[interface{}][]*ZapRecord {return zmap.zapmap}
 
 // Gateway for reading from zapmap.
 func (zmap *Zapmap) Get(key interface{}) []*ZapRecord {
@@ -348,6 +354,19 @@ func (zmap *Zapmap) Delete(key interface{}) {
 	zmap.Unlock()
 	zmap.changed = true
 	return
+}
+
+// Return number of keys in zapmap
+func (zmap *Zapmap) Len() int {return len(zmap.zapmap)}
+
+// Return number of records in zapmap
+func (zmap *Zapmap) Size() int {
+	if len(zmap.zapmap) == 0 {return 0}
+	result := 0
+	for _, zrecs := range zmap.zapmap {
+		result += len(zrecs)
+	}
+	return result
 }
 
 // Gateway for reading from user permission index.
@@ -409,7 +428,7 @@ func InjectType(x []byte, typ LBTYPE) []byte {
 }
 
 // Read the first bytes of the given byte slice to return the LBTYPE.
-func GetType(x []byte, debug *DebugLogger) (typ LBTYPE) {
+func GetType(x []byte, debug *gubed.Logger) (typ LBTYPE) {
 	if len(x) < LBTYPE_SIZE {
 		debug.Error(FmtErrSliceTooSmall(x, LBTYPE_SIZE))
 	}
@@ -430,19 +449,19 @@ func KeyToBytes(key interface{}) []byte {
 
 // Inject the key type into the byte representation of the key, in
 // one step.
-func InjectKeyType(key interface{}, debug *DebugLogger) []byte {
+func InjectKeyType(key interface{}, debug *gubed.Logger) []byte {
 	kbyts := KeyToBytes(key)
 	ktype := GetKeyType(key, debug)
 	return InjectType(kbyts, ktype)
 }
 
-func SnipValueType(val []byte, debug *DebugLogger) (newval []byte, vtype LBTYPE) {
+func SnipValueType(val []byte, debug *gubed.Logger) (newval []byte, vtype LBTYPE) {
 	vtype = GetType(val, debug)
 	newval = val[LBTYPE_SIZE:]
 	return
 }
 
-func SnipKeyType(key []byte, debug *DebugLogger)  (newkey []byte, ktype LBTYPE) {
+func SnipKeyType(key []byte, debug *gubed.Logger)  (newkey []byte, ktype LBTYPE) {
 	bfr := bufio.NewReader(bytes.NewBuffer(key[:LBTYPE_SIZE]))
 	debug.DecodeError(binary.Read(bfr, BIGEND, &ktype))
 	newkey	= key[LBTYPE_SIZE:]
@@ -473,7 +492,7 @@ func (vloc *ValueLocation) ToValue(vbyts []byte, vtype LBTYPE) *Value {
 }
 
 // Map GenericRecord to a new LogRecord.
-func (rec *GenericRecord) ToLogRecord(debug *DebugLogger) *LogRecord {
+func (rec *GenericRecord) ToLogRecord(debug *gubed.Logger) *LogRecord {
 	lrec := NewLogRecord()
 	lrec.ksz = rec.ksz
 	lrec.vsz = rec.vsz - CRC_SIZE
@@ -490,7 +509,7 @@ func (rec *GenericRecord) ToLogRecord(debug *DebugLogger) *LogRecord {
 }
 
 // Map GenericRecord to a new IndexRecord.
-func (rec *GenericRecord) ToIndexRecord(debug *DebugLogger) *IndexRecord {
+func (rec *GenericRecord) ToIndexRecord(debug *gubed.Logger) *IndexRecord {
 	irec := NewIndexRecord()
 	irec.ksz = rec.ksz
 	irec.kbyts = rec.kbyts
@@ -503,7 +522,7 @@ func (rec *GenericRecord) ToIndexRecord(debug *DebugLogger) *IndexRecord {
 }
 
 // Map LogRecord to an IndexRecord.  Note vpos is left as nil.
-func (lrec *LogRecord) ToIndexRecord(debug *DebugLogger) *IndexRecord {
+func (lrec *LogRecord) ToIndexRecord(debug *gubed.Logger) *IndexRecord {
 	irec := NewIndexRecord()
 	irec.ksz = lrec.ksz
 	irec.vsz = lrec.vsz
@@ -513,7 +532,7 @@ func (lrec *LogRecord) ToIndexRecord(debug *DebugLogger) *IndexRecord {
 }
 
 // Map GenericRecord to a new MasterLogRecord.
-func (rec *GenericRecord) ToValueLocation(debug *DebugLogger) (interface{}, *ValueLocation) {
+func (rec *GenericRecord) ToValueLocation(debug *gubed.Logger) (interface{}, *ValueLocation) {
 	key, err := MakeKey(rec.kbyts, rec.ktype, debug)
 	debug.Error(err)
 	vbyts, _ := rec.GetValueAndType(MASTER_RECORD, debug)
@@ -527,7 +546,7 @@ func (rec *GenericRecord) ToValueLocation(debug *DebugLogger) (interface{}, *Val
 }
 
 // Map GenericRecord to a new ZapRecord list.
-func (rec *GenericRecord) ToZapRecordList(debug *DebugLogger) (interface{}, []*ZapRecord) {
+func (rec *GenericRecord) ToZapRecordList(debug *gubed.Logger) (interface{}, []*ZapRecord) {
 	key, err := MakeKey(rec.kbyts, rec.ktype, debug)
 	debug.Error(err)
 	n := rec.LocationListLength()
@@ -543,7 +562,7 @@ func (rec *GenericRecord) ToZapRecordList(debug *DebugLogger) (interface{}, []*Z
 }
 
 // Map GenericRecord to a new UserPermissionRecord.
-func (rec *GenericRecord) ToUserPermissionRecord(debug *DebugLogger) (interface{}, *UserPermissionRecord) {
+func (rec *GenericRecord) ToUserPermissionRecord(debug *gubed.Logger) (interface{}, *UserPermissionRecord) {
 	key, err := MakeKey(rec.kbyts, rec.ktype, debug)
 	debug.Error(err)
 	upr := NewUserPermissionRecord()
@@ -566,7 +585,7 @@ func (val *Value) ToValueLocation() *ValueLocation {
 	return val.ValueLocation
 }
 
-func (rec *GenericRecord) GetValueAndType(rectype int, debug *DebugLogger) ([]byte, LBTYPE) {
+func (rec *GenericRecord) GetValueAndType(rectype int, debug *gubed.Logger) ([]byte, LBTYPE) {
 	if FileDecodeConfigs[rectype].snipValueType {
 		// LBTYPE has already been snipped
 		return rec.vbyts, rec.vtype
@@ -642,6 +661,15 @@ func (zrec *ZapRecord) String() string {
 		zrec.rpos)
 }
 
+// Convert Index list to byte slice.
+func (ind *Index) ToBytes() []byte {
+	bfr := new(bytes.Buffer)
+	for _, rec := range ind.List {
+		bfr.Write(rec.Pack())
+	}
+    return bfr.Bytes()
+}
+
 // LBUINT related functions.
 
 func (i LBUINT) Plus(other int) LBUINT {
@@ -684,7 +712,7 @@ func (val *Value) ReadVal(lbase *Logbase) ([]byte, LBTYPE, error) {
 
 // Byte packing functions.
 
-func MakeLogRecord(key interface{}, val []byte, vtype LBTYPE, debug *DebugLogger) *LogRecord {
+func MakeLogRecord(key interface{}, val []byte, vtype LBTYPE, debug *gubed.Logger) *LogRecord {
 	lrec := NewLogRecord()
 	ktype := GetKeyType(key, debug)
 	kbyts := KeyToBytes(key)
@@ -723,7 +751,7 @@ func (irec *IndexRecord) Pack() []byte {
 }
 
 // Return a byte slice with a zapmap record packed ready for file writing.
-func PackZapRecord(key interface{}, zrecs []*ZapRecord, debug *DebugLogger) []byte {
+func PackZapRecord(key interface{}, zrecs []*ZapRecord, debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	kbyts := InjectKeyType(key, debug)
 	ksz := AsLBUINT(len(kbyts))
@@ -740,7 +768,7 @@ func PackZapRecord(key interface{}, zrecs []*ZapRecord, debug *DebugLogger) []by
 }
 
 // Return a byte slice with a ValueLocation packed ready for file writing.
-func (vloc *ValueLocation) Pack(key interface{}, debug *DebugLogger) []byte {
+func (vloc *ValueLocation) Pack(key interface{}, debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	byts := PackKey(key, debug)
 	bfr.Write(byts)
@@ -751,7 +779,7 @@ func (vloc *ValueLocation) Pack(key interface{}, debug *DebugLogger) []byte {
 	return bfr.Bytes()
 }
 
-func PackKey(key interface{}, debug *DebugLogger) []byte {
+func PackKey(key interface{}, debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	kbyts := InjectKeyType(key, debug)
 	ksz := AsLBUINT(len(kbyts))
@@ -762,7 +790,7 @@ func PackKey(key interface{}, debug *DebugLogger) []byte {
 
 // Return a byte slice with a user permission record packed ready for file
 // writing.
-func PackUserPermissionRecord(key interface{}, upr *UserPermissionRecord, debug *DebugLogger) []byte {
+func PackUserPermissionRecord(key interface{}, upr *UserPermissionRecord, debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	kbyts := InjectKeyType(key, debug)
 	ksz := AsLBUINT(len(kbyts))
@@ -893,7 +921,7 @@ func (zmap *Zapmap) Find(fnum LBUINT) (rpos, rsz []LBUINT, err error) {
 }
 
 // Delete all zapmap records associated with the given logfile number.
-func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
+func (zmap *Zapmap) Purge(fnum LBUINT, debug *gubed.Logger) {
 	debug.Basic("Purge zapmap of logfile %d entries", fnum)
 	for key, zrecs := range zmap.zapmap {
 		var newzrecs []*ZapRecord // Make a new list to replace old
@@ -914,7 +942,7 @@ func (zmap *Zapmap) Purge(fnum LBUINT, debug *DebugLogger) {
 }
 
 // Encode a Go object into bytes.
-func Gobify(param interface{}, debug *DebugLogger) []byte {
+func Gobify(param interface{}, debug *gubed.Logger) []byte {
 	var bfr bytes.Buffer
 	enc := gob.NewEncoder(&bfr)
 	err := enc.Encode(param)
@@ -923,10 +951,47 @@ func Gobify(param interface{}, debug *DebugLogger) []byte {
 }
 
 // Decode bytes into the given Go object.
-func Degobify(byts []byte, param interface{}, debug *DebugLogger) {
+func Degobify(byts []byte, param interface{}, debug *gubed.Logger) {
 	var bfr bytes.Buffer
 	dec := gob.NewDecoder(&bfr)
 	err := dec.Decode(&param)
 	debug.Error(err)
 	return
+}
+
+// Debug.
+
+func (cat *Catalog) Dump() {
+	var lines []string
+	for key, cr := range cat.Map() {
+		lines = append(lines, fmt.Sprintf("%v %v", key, cr.String()))
+	}
+	sort.Strings(lines)
+	cat.debug.Dump(lines, "%v records for catalog %q", cat.Len(), cat.Name())
+	return
+}
+
+func (lbase *Logbase) DumpZapmap() {
+	if lbase.Zapmap().Len() > 0 {
+		var lines []string
+		for key, zrecs := range lbase.Zapmap().Map() {
+			var line string = ""
+			for _, zrec := range zrecs {
+				line += zrec.String()
+			}
+			if len(line) > 0 {
+				lines = append(lines, fmt.Sprintf("%q {%s}", key, line))
+			}
+		}
+		sort.Strings(lines)
+		lbase.debug.Dump(
+			lines,
+			"%v records associated with %v keys for logbase %q zapmap",
+			lbase.Zapmap().Size(),
+			lbase.Zapmap().Len(),
+			lbase.Name())
+	} else
+	{
+		lbase.debug.Advise("Logbase %q zapmap is empty", lbase.Name())
+	}
 }

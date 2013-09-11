@@ -22,7 +22,11 @@ func main() {
 
 	pass := lb.AskForPass()
 	MakeKillFile()
-	lb.NewServer().Start(lb.GeneratePassHash(pass))
+	err := lb.NewServer().Start(lb.GeneratePassHash(pass))
+	if err != nil {
+		fmt.Printf("Fatal problem starting server: %s\n", err)
+		os.Exit(1)
+	}
 	os.RemoveAll(KILLFILE_PATH)
 }
 

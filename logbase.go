@@ -92,6 +92,7 @@ package logbase
 
 import (
 	"github.com/h00gs/toml"
+	"github.com/h00gs/gubed"
 	"os"
 	"path"
 	"path/filepath"
@@ -103,7 +104,7 @@ type Logbase struct {
 	abspath     string // Logbase directory path
 	permdir		string // Logbase user permissions sub-dir
 	config      *LogbaseConfiguration
-	debug       *DebugLogger
+	debug       *gubed.Logger
 	livelog     *Logfile // The current (live) log file
 	mcat        *Catalog
 	zmap        *Zapmap
@@ -119,7 +120,7 @@ func (lbase *Logbase) Name() string {return lbase.name}
 func (lbase *Logbase) AbsPath() string {return lbase.abspath}
 func (lbase *Logbase) PermissionsDir() string {return lbase.permdir}
 func (lbase *Logbase) Config() *LogbaseConfiguration {return lbase.config}
-func (lbase *Logbase) Debug() *DebugLogger {return lbase.debug}
+func (lbase *Logbase) Debug() *gubed.Logger {return lbase.debug}
 func (lbase *Logbase) Livelog() *Logfile {return lbase.livelog}
 func (lbase *Logbase) MasterCatalog() *Catalog {return lbase.mcat}
 func (lbase *Logbase) Zapmap() *Zapmap {return lbase.zmap}
@@ -129,7 +130,7 @@ func (lbase *Logbase) FileCache() *Cache {return lbase.filecache}
 func (lbase *Logbase) NodeCache() *Cache {return lbase.nodecache}
 
 // Make a new Logbase instance based on the given directory path.
-func MakeLogbase(abspath string, debug *DebugLogger) *Logbase {
+func MakeLogbase(abspath string, debug *gubed.Logger) *Logbase {
 	lbase := NewLogbase(debug)
 	lbase.name = filepath.Base(abspath)
 	lbase.abspath = abspath
@@ -141,7 +142,7 @@ func MakeLogbase(abspath string, debug *DebugLogger) *Logbase {
 }
 
 // Initialise embedded fields.
-func NewLogbase(debug *DebugLogger) *Logbase {
+func NewLogbase(debug *gubed.Logger) *Logbase {
 	return &Logbase{
 	    mcat:		MakeMasterCatalog(debug),
 	    zmap:		MakeZapmap(debug),
@@ -206,11 +207,22 @@ func (lbase *Logbase) Close() error {
 // the internal master catalog.  If the key already exists in the master,
 // append the old master catalog record into a "zapmap" which schedules stale
 // data for deletion.
-func (lbase *Logbase) Init(user, passhash string) error {
+func (lbase *Logbase) Init(makeit bool) error {
 	lbase.debug.Basic("Commence init of logbase %q", lbase.name)
-	// Make dir if it does not exist
-	err := lbase.debug.Error(os.MkdirAll(lbase.abspath, 0777))
-	if err != nil {return err}
+	stat, err := os.Stat(lbase.abspath)
+	if os.IsNotExist(err) {
+		if makeit {
+			// Make dir if it does not exist
+			err = lbase.debug.Error(os.MkdirAll(lbase.abspath, 0777))
+			if err != nil {return err}
+		} else {
+			return FmtErrDirNotFound(lbase.abspath)
+		}
+	} else {
+		if !stat.Mode().IsDir() {
+			return FmtErrDirNotFound(lbase.abspath)
+		}
+	}
 
 	// Load optional logbase config file
 	cfgPath := path.Join(lbase.abspath, CONFIG_FILENAME)
@@ -221,7 +233,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	// Wire up the Master and Zapmap files
 	lbase.debug.Error(lbase.mcat.InitFile(lbase))
 	var zfile *File
-	zfile, err = lbase.GetFile(ZAPMAP_FILENAME)
+	zfile, _, err = lbase.GetFile(ZAPMAP_FILENAME)
 	lbase.debug.Error(err)
 	zfile.Touch()
 	lbase.zmap.file = NewZapfile(zfile)
@@ -230,65 +242,27 @@ func (lbase *Logbase) Init(user, passhash string) error {
 	if lbase.mcat.file.size > 0 {
 		if lbase.debug.Error(lbase.mcat.Load(lbase)) == nil {
 			lbase.debug.Advise("Loaded master file")
+			buildmasterzap = false
 			if lbase.zmap.file.size > 0 {
 				if lbase.debug.Error(lbase.zmap.Load()) == nil {
 					lbase.debug.Advise("Loaded zap file")
 					buildmasterzap = false
+				} else {
+					buildmasterzap = true
 				}
 			}
 		}
 	}
 
 	if buildmasterzap {
-		lbase.mcat.ResetId()
 		lbase.debug.Advise(
 			"Could not find or load master and zapmap files, " +
-			"build from index files...")
-		// Get logfile list
-		fpaths, fnums, err2 := lbase.GetLogfilePaths()
-		if lbase.debug.Error(err2) != nil {return err2}
-		if len(fnums) == 0 {
-			lbase.debug.Advise("This appears to be a new logbase")
-		}
-
-		// Iterate through all log files
-		var refresh bool
-		for i, fnum := range fnums {
-			lbase.debug.Fine("Scan log file %d index", fnum)
-			refresh = false
-			ipath := path.Join(lbase.abspath, lbase.MakeIndexfileRelPath(fnum))
-			istat, err := os.Stat(ipath)
-			if os.IsNotExist(err) || istat.Size() == 0 {
-				refresh = true
-			} else if err != nil {
-				return err
-			}
-			fstat, err3 := os.Stat(fpaths[i])
-			if lbase.debug.Error(err3) != nil {return err3}
-			var lfindex *Index
-			if fstat.Size() > 0 {
-				if refresh {
-					lbase.debug.Basic("Refreshing index file %s", ipath)
-					lfindex, err = lbase.RefreshIndexfile(fnum)
-				} else {
-					lbase.debug.Basic("Reading index file %s", ipath)
-					lfindex, err = lbase.ReadIndexfile(fnum)
-				}
-			}
-			if lbase.debug.Error(err) != nil {return err}
-			for _, irec := range lfindex.list {
-				key, vloc := lbase.UpdateZapmap(irec, fnum)
-				lbase.mcat.Update(key, vloc)
-			}
-		}
+			"build from index files if present...")
+		if err = lbase.debug.Error(lbase.Refresh(false)); err != nil {return err}
 	}
 
 	// Initialise livelog
 	if err = lbase.debug.Error(lbase.SetLiveLog()); err != nil {return err}
-
-	// User
-	err = lbase.InitSecurity(user, passhash)
-	if err != nil {return err}
 
 	// Load other Catalogs, order important, must be done after
 	// Master Catalog since other catalogs will use pointers to
@@ -307,7 +281,7 @@ func (lbase *Logbase) Init(user, passhash string) error {
 // Save the key-value pair in the live log.  Handles the value type
 // prepend into the value bytes.
 func (lbase *Logbase) Put(key interface{}, vbyts []byte, vtype LBTYPE) (CatalogRecord, error) {
-	if lbase.debug.GetLevel() > DEBUGLEVEL_ADVISE {
+	if lbase.debug.GetLevel() > gubed.DEBUGLEVEL_ADVISE {
 		lbase.debug.Basic(
 			"Putting (%v,%s) into logbase %s",
 			key, ValBytesToString(vbyts, vtype), lbase.name)
@@ -374,6 +348,52 @@ func (lbase *Logbase) Zap(bufsz LBUINT) error {
 		if err != nil {return err}
 		err = lfile.Zap(lbase.zmap, bufsz)
 		if err != nil {return err}
+	}
+	return err
+}
+
+// Regenerate the Master Catalog and Zapmap.  If the given switch
+// forceIndexRefresh is on, refresh each logfile index file, otherwise only
+// refresh each index if it is not present.
+func (lbase *Logbase) Refresh(forceIndexRefresh bool) error {
+	lbase.mcat.ResetId()
+	// Get logfile list
+	fpaths, fnums, err2 := lbase.GetLogfilePaths()
+	if lbase.debug.Error(err2) != nil {return err2}
+	if len(fnums) == 0 {
+		lbase.debug.Advise("This appears to be a new logbase")
+		return nil
+	}
+
+	// Iterate through all log files
+	var refreshIndex bool
+	for i, fnum := range fnums {
+		lbase.debug.Fine("Scan log file %d index", fnum)
+		refreshIndex = forceIndexRefresh
+		ipath := path.Join(lbase.abspath, lbase.MakeIndexfileRelPath(fnum))
+		istat, err := os.Stat(ipath)
+		if os.IsNotExist(err) || istat.Size() == 0 {
+			refreshIndex = true
+		} else if err != nil {
+			return err
+		}
+		fstat, err3 := os.Stat(fpaths[i])
+		if lbase.debug.Error(err3) != nil {return err3}
+		var lfindex *Index
+		if fstat.Size() > 0 {
+			if refreshIndex {
+				lbase.debug.Basic("Refreshing index file %s", ipath)
+				lfindex, err = lbase.RefreshIndexfile(fnum)
+			} else {
+				lbase.debug.Basic("Reading index file %s", ipath)
+				lfindex, err = lbase.ReadIndexfile(fnum)
+			}
+		}
+		if lbase.debug.Error(err) != nil {return err}
+		for _, irec := range lfindex.List {
+			key, vloc := lbase.UpdateZapmap(irec, fnum)
+			lbase.mcat.Update(key, vloc)
+		}
 	}
 	return nil
 }

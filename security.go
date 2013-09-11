@@ -82,7 +82,7 @@ func (lbase *Logbase) InitSecurity(user, passhash string) (err error) {
 		for _, name := range usernames {
 			if lbase.IsUser(name) {
 				up := NewUserPermissions(NewReader(), lbase.debug)
-				ufile, err := lbase.GetUserPermissionFile(name)
+				ufile, _, err := lbase.GetUserPermissionFile(name)
 				lbase.debug.Error(err)
 				up.file = NewUserPermissionFile(ufile)
 				if up.file.size > 0 {
@@ -117,7 +117,7 @@ func (lbase *Logbase) UserPermissionRelPath(user string) string {
 	return filepath.Join(lbase.permdir, user)
 }
 
-func (lbase *Logbase) GetUserPermissionFile(user string) (ufile *File, err error) {
+func (lbase *Logbase) GetUserPermissionFile(user string) (*File, bool, error) {
 	return lbase.GetFile(lbase.UserPermissionRelPath(user))
 }
 
@@ -129,7 +129,7 @@ func (lbase *Logbase) AddUserPass(user, passhash string) error {
 
 func (lbase *Logbase) AddUserPermissions(user string, defperm *Permission) (err error) {
 	// Add user permission file
-	ufile, err := lbase.GetUserPermissionFile(user)
+	ufile, _, err := lbase.GetUserPermissionFile(user)
 	lbase.debug.Error(err)
 	up := NewUserPermissions(defperm, lbase.debug)
 	up.file = NewUserPermissionFile(ufile)

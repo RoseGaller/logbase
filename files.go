@@ -6,6 +6,7 @@
 package logbase
 
 import (
+	"github.com/h00gs/gubed"
 	"os"
 	"io"
 	"bytes"
@@ -53,7 +54,7 @@ type File struct {
 	gofile  *os.File
 	abspath string // path name used to open file
 	sync.RWMutex
-	debug   *DebugLogger
+	debug   *gubed.Logger
 	isOpen  bool // its ok to have multiple opens of same gofile
 	size    int // size in bytes
 	tmp		*File // temporary "twin" file
@@ -74,11 +75,11 @@ func Exists(abspath string) bool {
 // Use this as the gateway for file creation/retrieval
 // where possible to take advantage of the file register
 // and ensure proper initialisation.
-func (lbase *Logbase) GetFile(relpath string) (*File, error) {
+func (lbase *Logbase) GetFile(relpath string) (*File, bool, error) {
 	fpath := path.Join(lbase.abspath, relpath)
-	// Use existing File if present
+	// Check cache
 	obj, present := lbase.FileCache().objects[fpath]
-	if present {return obj.(*File), nil}
+	if present {return obj.(*File), true, nil}
 
 	// Create file and its tmp twin
 	file := lbase.MakeFile(fpath)
@@ -86,7 +87,7 @@ func (lbase *Logbase) GetFile(relpath string) (*File, error) {
 	file.tmp = lbase.MakeFile(file.TmpTwinPath())
 
 	err := file.Touch()
-	return file, err
+	return file, false, err
 }
 
 // Construct a new file.
@@ -96,6 +97,7 @@ func (lbase *Logbase) MakeFile(path string) (file *File) {
 	fileCounter++
 	file.abspath = path
 	file.debug = lbase.debug
+	// Add to cache
 	lbase.FileCache().objects[file.abspath] = file
 	return file
 }
@@ -370,8 +372,6 @@ func (file *File) LockedWriteAt(byts []byte, pos LBUINT) (nw int, err error) {
 
 func (file *File) String() string {
 	return fmt.Sprintf(
-		"%v %d %s",
-		&file,
-		file.id,
+		"%s",
 		file.abspath)
 }

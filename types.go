@@ -4,6 +4,7 @@
 package logbase
 
 import (
+	"github.com/h00gs/gubed"
 	"fmt"
 	"bytes"
 	"encoding/binary"
@@ -12,7 +13,7 @@ import (
 // Keys
 
 // Keys can only be a subset of the LBTYPEs.
-func MakeKey(kbyts []byte, ktype LBTYPE, debug *DebugLogger) (interface{}, error) {
+func MakeKey(kbyts []byte, ktype LBTYPE, debug *gubed.Logger) (interface{}, error) {
 	if IsAllowableKey(ktype) {
 		return MakeTypeFromBytes(kbyts, ktype)
 	} else {
@@ -83,7 +84,7 @@ func MakeTypeFromBytes(byts []byte, typ LBTYPE) (interface{}, error) {
 		return string(byts), nil
 	case LBTYPE_CATID_SET:
 		v := NewCatalogIdSet()
-		err := v.FromBytes(bfr, ScreenLogger)
+		err := v.FromBytes(bfr, gubed.ScreenLogger)
 		return v, err
 	case LBTYPE_KIND,
 		 LBTYPE_DOC:
@@ -95,7 +96,7 @@ func MakeTypeFromBytes(byts []byte, typ LBTYPE) (interface{}, error) {
 	}
 }
 
-func GetKeyType(key interface{}, debug *DebugLogger) LBTYPE {
+func GetKeyType(key interface{}, debug *gubed.Logger) LBTYPE {
 	switch ktype := key.(type) {
 	case uint8:
 		return LBTYPE_UINT8
@@ -166,7 +167,7 @@ func IsAllowableKey(typ LBTYPE) bool {
 	return false
 }
 
-func ToBytes(val interface{}, vt LBTYPE, debug *DebugLogger) (byts []byte, err error) {
+func ToBytes(val interface{}, vt LBTYPE, debug *gubed.Logger) (byts []byte, err error) {
 	bfr := new(bytes.Buffer)
 	es := "Type mismatch, value is type %T but LBTYPE is %v"
 	switch v := val.(type) {

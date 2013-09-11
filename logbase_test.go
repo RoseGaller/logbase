@@ -2,6 +2,7 @@ package logbase
 
 import (
 	"testing"
+	"github.com/h00gs/gubed"
 	//"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,114 @@ var k, v []string
 var pair int = 0
 var mc *Catalog
 var zm *Zapmap
+
+// SUPPORT FUNCTIONS ==========================================================
+
+// Set up the global test logbase.
+func setupLogbase() (lb *Logbase) {
+	cwd, _ := os.Getwd()
+	lbtest = filepath.Join(cwd, lbname)
+	err := os.RemoveAll(lbtest)
+	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
+	lb = MakeLogbase(lbtest, gubed.ScreenLogger.SetLevel(debug_level))
+	err = lb.Init(true)
+	if err != nil {
+		WrapError("Could not create test logbase", err).Fatal()
+	}
+	err = lb.InitSecurity(user, passhash)
+	if err != nil {
+		WrapError("Problem initialising security for test logbase", err).Fatal()
+	}
+	lb.config.LOGFILE_MAXBYTES = logfile_maxbytes
+	return
+}
+
+// Dump contents of given index file.
+func dumpIndex(ifile *Indexfile) {
+	lfindex, err := ifile.Load()
+	if err != nil {
+		WrapError("Could not load live log index file", err).Fatal()
+	}
+	lbase.debug.Fine("Index file records for %s:", ifile.abspath)
+	for _, irec := range lfindex.List {
+		lbase.debug.Fine(irec.String())
+	}
+}
+
+func dumpLogfiles() {
+	_, fnums, err := lbase.GetLogfilePaths()
+	if err != nil {WrapError("Could not get logfile paths", err).Fatal()}
+	for _, fnum := range fnums {
+		lfile, err := lbase.GetLogfile(fnum)
+		if err != nil {WrapError("Could not get logfile", err).Fatal()}
+		lbase.debug.Fine("Logfile records for %s:", lfile.abspath)
+		lrecs, err2 := lfile.Load()
+		if err2 != nil {WrapError("Could not get logfile", err2).Fatal()}
+		for _, lrec := range lrecs {
+			lbase.debug.Fine(" %s", lrec.String())
+		}
+		//lbase.debug.Fine("Hex dump for %s:", lfile.abspath)
+		//lfile.HexDump(0, 0)
+	}
+	return
+}
+
+// Put and get a key-value pair.
+func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
+	key := keystr
+	val := []byte(valstr)
+
+	_, err := lbase.Put(key, val, LBTYPE_STRING)
+	if err != nil {
+		t.Fatalf("Could not put key value pair into test logbase: %s", err)
+	}
+
+	got, vtype, _, err := lbase.Get(key)
+	if err != nil {
+		t.Fatalf("Could not get key value pair from test logbase: %s", err)
+	}
+
+	gotstr := string(got)
+	vstr := string(val)
+	if vstr != gotstr {
+		t.Fatalf("The retrieved value %q differed from the expected value %q",
+			gotstr, vstr)
+	}
+
+	if vtype != LBTYPE_STRING {
+		t.Fatalf(
+			"The retrieved value type %d differed from the expected value type %d",
+			vtype, LBTYPE_STRING)
+	}
+
+	return lbase
+}
+
+func generateRandomKeyValuePairs(n, min, max uint64) (keys, values []string) {
+	keys = GenerateRandomHexStrings(n, min, max)
+	values = GenerateRandomHexStrings(n, min, max)
+	return
+}
+
+func dumpKeyValuePairs(keys, values []string) {
+	lbase.debug.Advise("Dumping key value pairs:")
+	comlen := len(keys)
+	if len(values) < len(keys) {comlen = len(values)}
+	for i := 0; i < comlen; i++ {
+		lbase.debug.Advise(" (%s,%s)", keys[i], values[i])
+	}
+	return
+}
+
+func LBUINTEqual(a, b []LBUINT) bool {
+	if len(a) != len(b) {return false}
+	for i, v := range a {
+		if v != b[i] {return false}
+	}
+	return true
+}
+
+// TESTS ======================================================================
 
 // Put and get a key-value pair into a virgin logbase.
 func TestSaveRetrieveKeyValue1(t *testing.T) {
@@ -48,8 +157,8 @@ func TestSaveRetrieveKeyValue3(t *testing.T) {
 	saveRetrieveKeyValue(k[pair], v[pair], t)
 	mcr[2] = lbase.mcat.Get(k[pair])
 	//dumpIndex(lbase.livelog.indexfile)
-	lbase.debug.DumpCatalog(lbase.MasterCatalog())
-	lbase.debug.DumpZapmap(lbase)
+	lbase.MasterCatalog().Dump()
+	lbase.DumpZapmap()
 	err := lbase.Save()
 	if err != nil {
 		t.Fatalf("Problem saving logbase: %s", err)
@@ -135,7 +244,7 @@ func TestNewDocs(t *testing.T) {
 	err = george.Save(lbase)
 	if err != nil {t.Fatalf("Problem creating doc %q: %s", george.Name(), err)}
 
-	lbase.debug.DumpCatalog(lbase.MasterCatalog())
+	lbase.MasterCatalog().Dump()
 }
 
 // Re-initialise the logbase and ensure that the master catalog and zapmap are
@@ -150,9 +259,16 @@ func TestLoadMasterAndZapmap(t *testing.T) {
 	lbase.mcat = MakeMasterCatalog(lbase.debug)
 	lbase.catcache.Put(lbase.mcat.Name(), lbase.mcat)
 	lbase.zmap = MakeZapmap(lbase.debug)
-	lbase.Init(user, passhash)
-	lbase.debug.DumpCatalog(lbase.MasterCatalog())
-	lbase.debug.DumpZapmap(lbase)
+	err = lbase.Init(true)
+	if err != nil {
+		WrapError("Could not create test logbase", err).Fatal()
+	}
+	err = lbase.InitSecurity(user, passhash)
+	if err != nil {
+		WrapError("Problem initialising security for test logbase", err).Fatal()
+	}
+	lbase.MasterCatalog().Dump()
+	lbase.DumpZapmap()
 	if len(lbase.mcat.index) != len(mc.index) {
 		t.Fatalf(
 			"The loaded master file should have %d entries, but has %d",
@@ -202,9 +318,16 @@ func TestReconstructMasterAndZapmap(t *testing.T) {
 	lbase.mcat = MakeMasterCatalog(lbase.debug)
 	lbase.catcache.Put(lbase.mcat.Name(), lbase.mcat)
 	lbase.zmap = MakeZapmap(lbase.debug)
-	lbase.Init(user, passhash)
-	lbase.debug.DumpCatalog(lbase.MasterCatalog())
-	lbase.debug.DumpZapmap(lbase)
+	err = lbase.Init(true)
+	if err != nil {
+		WrapError("Could not create test logbase", err).Fatal()
+	}
+	err = lbase.InitSecurity(user, passhash)
+	if err != nil {
+		WrapError("Problem initialising security for test logbase", err).Fatal()
+	}
+	lbase.MasterCatalog().Dump()
+	lbase.DumpZapmap()
 	if len(lbase.mcat.index) != len(mc.index) {
 		t.Fatalf(
 			"The loaded master file should have %d entries, but has %d",
@@ -352,7 +475,7 @@ func TestFind(t *testing.T) {
 			len(colours), 2)
 	}
 	for _, node := range colours {
-		lbase.debug.Check("%v", node)
+		lbase.debug.Check("%v %v %v", node, node.mcr_id, node.mcr_name)
 	}
 	catColours := lbase.AsCatalog(colours)
 	catColours.InitFile(lbase)
@@ -360,107 +483,5 @@ func TestFind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Problem saving catalog %q: %s", catColours.Name(), err)
 	}
-	lbase.debug.DumpCatalog(lbase.MasterCatalog())
-}
-
-// SUPPORT FUNCTIONS ==========================================================
-
-// Set up the global test logbase.
-func setupLogbase() (lb *Logbase) {
-	cwd, _ := os.Getwd()
-	lbtest = filepath.Join(cwd, lbname)
-	err := os.RemoveAll(lbtest)
-	if err != nil {WrapError("Trouble deleting dir " + lbtest, err).Fatal()}
-	lb = MakeLogbase(lbtest, ScreenLogger.SetLevel(debug_level))
-	err = lb.Init(user, passhash)
-	if err != nil {
-		WrapError("Could not create test logbase", err).Fatal()
-	}
-	lb.config.LOGFILE_MAXBYTES = logfile_maxbytes
-	return
-}
-
-// Dump contents of given index file.
-func dumpIndex(ifile *Indexfile) {
-	lfindex, err := ifile.Load()
-	if err != nil {
-		WrapError("Could not load live log index file", err).Fatal()
-	}
-	lbase.debug.Fine("Index file records for %s:", ifile.abspath)
-	for _, irec := range lfindex.list {
-		lbase.debug.Fine(irec.String())
-	}
-}
-
-func dumpLogfiles() {
-	_, fnums, err := lbase.GetLogfilePaths()
-	if err != nil {WrapError("Could not get logfile paths", err).Fatal()}
-	for _, fnum := range fnums {
-		lfile, err := lbase.GetLogfile(fnum)
-		if err != nil {WrapError("Could not get logfile", err).Fatal()}
-		lbase.debug.Fine("Logfile records for %s:", lfile.abspath)
-		lrecs, err2 := lfile.Load()
-		if err2 != nil {WrapError("Could not get logfile", err2).Fatal()}
-		for _, lrec := range lrecs {
-			lbase.debug.Fine(" %s", lrec.String())
-		}
-		//lbase.debug.Fine("Hex dump for %s:", lfile.abspath)
-		//lfile.HexDump(0, 0)
-	}
-	return
-}
-
-// Put and get a key-value pair.
-func saveRetrieveKeyValue(keystr, valstr string, t *testing.T) *Logbase {
-	key := keystr
-	val := []byte(valstr)
-
-	_, err := lbase.Put(key, val, LBTYPE_STRING)
-	if err != nil {
-		t.Fatalf("Could not put key value pair into test logbase: %s", err)
-	}
-
-	got, vtype, _, err := lbase.Get(key)
-	if err != nil {
-		t.Fatalf("Could not get key value pair from test logbase: %s", err)
-	}
-
-	gotstr := string(got)
-	vstr := string(val)
-	if vstr != gotstr {
-		t.Fatalf("The retrieved value %q differed from the expected value %q",
-			gotstr, vstr)
-	}
-
-	if vtype != LBTYPE_STRING {
-		t.Fatalf(
-			"The retrieved value type %d differed from the expected value type %d",
-			vtype, LBTYPE_STRING)
-	}
-
-	return lbase
-}
-
-func generateRandomKeyValuePairs(n, min, max uint64) (keys, values []string) {
-	keys = GenerateRandomHexStrings(n, min, max)
-	values = GenerateRandomHexStrings(n, min, max)
-	return
-}
-
-func dumpKeyValuePairs(keys, values []string) {
-	lbase.debug.Advise("Dumping key value pairs:")
-	comlen := len(keys)
-	if len(values) < len(keys) {comlen = len(values)}
-	for i := 0; i < comlen; i++ {
-		lbase.debug.Advise(" (%s,%s)", keys[i], values[i])
-	}
-	return
-}
-
-func LBUINTEqual(a, b []LBUINT) bool {
-	if len(a) != len(b) {return false}
-	for i, v := range a {
-		if v != b[i] {return false}
-	}
-	return true
+	lbase.MasterCatalog().Dump()
 }

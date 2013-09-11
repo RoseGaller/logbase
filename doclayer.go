@@ -29,6 +29,7 @@
 package logbase
 
 import (
+	"github.com/h00gs/gubed"
 	"fmt"
 	"encoding/binary"
 	"bytes"
@@ -67,7 +68,7 @@ type Node struct {
 	*FieldMap
 	mcr_id		CatalogRecord // Allows us to convert between Node <-> Catalog
 	mcr_name	CatalogRecord // Allows us to convert between Node <-> Catalog
-	debug		*DebugLogger // a small price to pay
+	debug		*gubed.Logger // a small price to pay
 }
 
 type Field struct {
@@ -212,12 +213,12 @@ func MintNode(ntype LBTYPE) *Node {
 	return &Node{
 		ntype:		ntype,
 		parents:	NewCatalogIdSet(),
-		debug:		ScreenLogger,
+		debug:		gubed.ScreenLogger,
 		FieldMap:	NewFieldMap(),
 	}
 }
 
-func MakeNode(name string, ntype LBTYPE, debug *DebugLogger) *Node {
+func MakeNode(name string, ntype LBTYPE, debug *gubed.Logger) *Node {
 	switch ntype {
     case LBTYPE_KIND, LBTYPE_DOC:
 		return &Node{
@@ -240,23 +241,27 @@ func NormaliseNodeName(name string, ntype LBTYPE) string {
 }
 
 func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Node, exists bool, err error) {
-	name = NormaliseNodeName(name, ntype)
-	vbyts, vtype, mcr_name, err := lbase.Get(name)
+	// Check cache
+	normname := NormaliseNodeName(name, ntype)
+	obj, present := lbase.NodeCache().objects[normname]
+	if present {return obj.(*Node), true, nil}
+
+	vbyts, vtype, mcr_name, err := lbase.Get(normname)
 	if err != nil {return}
 	exists = false
 	if vbyts == nil && create {
 		// A new node
-		node = MakeNode(name, ntype, lbase.debug)
+		node = MakeNode(normname, ntype, lbase.debug)
 		node.SetId(lbase.MasterCatalog().PopNextId())
 	} else {
 		exists = true
-		node = MakeNode(name, ntype, lbase.debug)
+		node = MakeNode(normname, ntype, lbase.debug)
 		// Read existing node data
 		if vtype != LBTYPE_CATID {
 			err = lbase.debug.Error(FmtErrBadType(
 				"Found record in logbase %s for node %q with type %v, " +
 				"but should be type %v",
-				lbase.name, name, vtype, LBTYPE_CATID))
+				lbase.name, normname, vtype, LBTYPE_CATID))
 			return
 		}
 		id, err1 := BytesToCatalogId(vbyts, lbase.debug)
@@ -271,13 +276,15 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 			err = lbase.debug.Error(FmtErrBadType(
 				"Found record %v in logbase %s for node %q via CATID %v " +
 				"with type %v, but should be type %v",
-				vbyts, lbase.name, name, id, vtype, ntype))
+				vbyts, lbase.name, normname, id, vtype, ntype))
 			return
 		}
 		node.mcr_id = mcr_id
 		node.mcr_name = mcr_name
 		node.FromBytes(bytes.NewBuffer(vbyts))
 	}
+	// Add to cache
+	lbase.NodeCache().objects[normname] = node
 	return
 }
 
@@ -285,9 +292,11 @@ func (lbase *Logbase) NewNode(name string, ntype LBTYPE, create bool) (node *Nod
 // representation, the second maps the name string to the parents set.
 func (node *Node) Save(lbase *Logbase) error {
 	lbase.debug.Basic("Saving %q to logbase %s", node.Name(), lbase.Name())
-	_, err := lbase.Put(node.CATID().id, node.Pack(), LBTYPE_KIND)
+	mcr_id, err := lbase.Put(node.CATID().id, node.Pack(), LBTYPE_KIND)
+	node.mcr_id = mcr_id
 	if node.debug.Error(err) != nil {return err}
-	_, err = lbase.Put(node.Name(), node.CATID().ToBytes(node.debug), LBTYPE_CATID)
+	mcr_name, err := lbase.Put(node.Name(), node.CATID().ToBytes(node.debug), LBTYPE_CATID)
+	node.mcr_name = mcr_name
 	return node.debug.Error(err)
 }
 
@@ -393,7 +402,7 @@ func (node *Node) SetFieldWithType(label string, val interface{}, vtype LBTYPE) 
 	return node
 }
 
-func (fmap *FieldMap) ToBytes(debug *DebugLogger) []byte {
+func (fmap *FieldMap) ToBytes(debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	var vsz LBUINT
 	var lbyts []byte
@@ -409,7 +418,7 @@ func (fmap *FieldMap) ToBytes(debug *DebugLogger) []byte {
 	return bfr.Bytes()
 }
 
-func (fmap *FieldMap) FromBytes(bfr *bytes.Buffer, debug *DebugLogger) (err error) {
+func (fmap *FieldMap) FromBytes(bfr *bytes.Buffer, debug *gubed.Logger) (err error) {
 	var size LBUINT
 	var label string
 	var vtype LBTYPE

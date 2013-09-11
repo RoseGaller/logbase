@@ -6,6 +6,7 @@
 package logbase
 
 import (
+	"github.com/h00gs/gubed"
 	"fmt"
 	"bytes"
 	"encoding/binary"
@@ -43,7 +44,7 @@ type Catalog struct {
 	nextid		CATID_TYPE
 	update		bool // Update as logbase is changed?
 	autosave	bool // Automatically save to file?
-	debug		*DebugLogger
+	debug		*gubed.Logger
 }
 
 // Getters.
@@ -57,8 +58,10 @@ func (cat *Catalog) NextId() CATID_TYPE {return cat.nextid}
 func (cat *Catalog) KeepUpdated() bool {return cat.update}
 func (cat *Catalog) AutoSave() bool {return cat.autosave}
 
+func (cat *Catalog) Len() int {return len(cat.index)}
+
 // Init a Catalog.
-func MakeCatalog(name string, debug *DebugLogger) *Catalog {
+func MakeCatalog(name string, debug *gubed.Logger) *Catalog {
 	return &Catalog{
 		name:		name,
 		ismaster:	false,
@@ -69,7 +72,7 @@ func MakeCatalog(name string, debug *DebugLogger) *Catalog {
 	}
 }
 
-func MakeMasterCatalog(debug *DebugLogger) *Catalog {
+func MakeMasterCatalog(debug *gubed.Logger) *Catalog {
 	return &Catalog{
 		name:		MASTER_CATALOG_NAME,
 		ismaster:	true,
@@ -80,7 +83,7 @@ func MakeMasterCatalog(debug *DebugLogger) *Catalog {
 	}
 }
 
-func MakeQueryCatalog(debug *DebugLogger) *Catalog {
+func MakeQueryCatalog(debug *gubed.Logger) *Catalog {
 	return MakeCatalog(GetNextQueryCatalogName(), debug)
 }
 
@@ -108,7 +111,7 @@ func (lbase *Logbase) GetCatalog(name string) (*Catalog, error) {
 
 // Initialise a Catalog file.  Not all catalogs need file service.
 func (cat *Catalog) InitFile(lbase *Logbase) error {
-	file, err := lbase.GetFile(cat.Filename())
+	file, _, err := lbase.GetFile(cat.Filename())
 	cat.debug.Error(err)
 	file.Touch()
 	cat.file = NewCatalogFile(file)
@@ -187,7 +190,7 @@ func (cid *CatalogId) ReadVal(lbase *Logbase) ([]byte, LBTYPE, error) {
 }
 
 // Return a byte slice with a CatalogId packed ready for file writing.
-func (cid *CatalogId) Pack(key interface{}, debug *DebugLogger) []byte {
+func (cid *CatalogId) Pack(key interface{}, debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	byts := PackKey(key, debug)
 	bfr.Write(byts)
@@ -197,7 +200,7 @@ func (cid *CatalogId) Pack(key interface{}, debug *DebugLogger) []byte {
 }
 
 // Return the byte slice representation of a CatalogId.
-func (cid *CatalogId) ToBytes(debug *DebugLogger) []byte {
+func (cid *CatalogId) ToBytes(debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	binary.Write(bfr, BIGEND, cid.id)
 	return bfr.Bytes()
@@ -241,7 +244,7 @@ func (cidset *CatalogIdSet) String() string {
 }
 
 // Return a byte slice with a CatalogIdSet packed ready for file writing.
-func (cidset *CatalogIdSet) Pack(debug *DebugLogger) []byte {
+func (cidset *CatalogIdSet) Pack(debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	binary.Write(bfr, BIGEND, LBTYPE_CATID_SET)
 	for _, cid := range cidset.set {
@@ -250,7 +253,7 @@ func (cidset *CatalogIdSet) Pack(debug *DebugLogger) []byte {
 	return bfr.Bytes()
 }
 
-func (cidset *CatalogIdSet) ToBytes(debug *DebugLogger) []byte {
+func (cidset *CatalogIdSet) ToBytes(debug *gubed.Logger) []byte {
 	bfr := new(bytes.Buffer)
 	for _, cid := range cidset.set {
 		binary.Write(bfr, BIGEND, cid.id)
@@ -259,7 +262,7 @@ func (cidset *CatalogIdSet) ToBytes(debug *DebugLogger) []byte {
 }
 
 // Read the parent CATID set, which is always the last section of the buffer.
-func (cidset *CatalogIdSet) FromBytes(bfr *bytes.Buffer, debug *DebugLogger) (err error) {
+func (cidset *CatalogIdSet) FromBytes(bfr *bytes.Buffer, debug *gubed.Logger) (err error) {
 	rem := bfr.Len() % int(CATID_TYPE_SIZE)
 	if rem > 0 {
 		err = debug.Error(FmtErrPartialCATIDSet(bfr.Len(), CATID_TYPE_SIZE))
@@ -313,7 +316,7 @@ func (val *Value) Equals(other CatalogRecord) bool {
 }
 
 // Read an CATID from a byte slice.
-func BytesToCatalogId(byts []byte, debug *DebugLogger) (interface{}, error) {
+func BytesToCatalogId(byts []byte, debug *gubed.Logger) (interface{}, error) {
 	bfr := bytes.NewBuffer(byts)
 	var cid CATID_TYPE
 	err := debug.DecodeError(binary.Read(bfr, BIGEND, &cid))

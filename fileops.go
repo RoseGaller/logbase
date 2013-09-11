@@ -76,6 +76,8 @@ import (
 	"sort"
 	"fmt"
 	"reflect"
+	"encoding/hex"
+	"bytes"
 )
 
 const (
@@ -158,7 +160,7 @@ func NewUserPermissionFile(file *File) *UserPermissionFile {
 func (lbase *Logbase) GetLogfile(fnum LBUINT) (lfile *Logfile, err error) {
 	fpath := lbase.MakeLogfileRelPath(fnum)
 	var file *File
-	file, err = lbase.GetFile(fpath)
+	file, _, err = lbase.GetFile(fpath)
 	if err != nil {return}
 
 	lfile = NewLogfile()
@@ -167,7 +169,7 @@ func (lbase *Logbase) GetLogfile(fnum LBUINT) (lfile *Logfile, err error) {
 
 	// Identify index file
 	ipath := lbase.MakeIndexfileRelPath(fnum)
-	file, err = lbase.GetFile(ipath)
+	file, _, err = lbase.GetFile(ipath)
 
 	// Link it to 
 	lfif := NewIndexfile()
@@ -381,13 +383,15 @@ func MakeIndexfileName(fnum LBUINT, ext string) string {
 
 // Log file methods, that may include associated index file ops.
 
+func (lfile *Logfile) GetIndexfile() *Indexfile {return lfile.indexfile}
+
 // Index the given log file.
 func (lfile *Logfile) Index() (*Index, error) {
 	index := new(Index)
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
 			irec := rec.ToLogRecord(lfile.debug).ToIndexRecord(lfile.debug)
-			index.list = append(index.list, irec)
+			index.List = append(index.List, irec)
 		}
 		return nil
 	}
@@ -395,8 +399,7 @@ func (lfile *Logfile) Index() (*Index, error) {
 	return index, err
 }
 
-// Read log file into two slices of raw bytes containing the keys and values
-// respectively.
+// Read log file into a LogRecord slice.
 func (lfile *Logfile) Load() ([]*LogRecord, error) {
 	var lrecs []*LogRecord
 	f := func(rec *GenericRecord) error {
@@ -428,7 +431,7 @@ func (lfile *Logfile) StoreData(lrec *LogRecord) (irec *IndexRecord, err error) 
 	irec.vpos = pos + hsz + irec.ksz
 
 	// Update the in-memory file index
-	lfile.indexfile.list = append(lfile.indexfile.list, irec)
+	lfile.indexfile.List = append(lfile.indexfile.List, irec)
 
 	// Write the index record to the index file
 	lfile.indexfile.Open(CREATE | WRITE_ONLY | APPEND)
@@ -557,7 +560,7 @@ func (ifile *Indexfile) Load() (lfindex *Index, err error) {
 	f := func(rec *GenericRecord) error {
 		if rec.ksz > 0 {
 			irec := rec.ToIndexRecord(ifile.debug)
-			lfindex.list = append(lfindex.list, irec)
+			lfindex.List = append(lfindex.List, irec)
 		}
 		return nil
 	}
@@ -566,21 +569,12 @@ func (ifile *Indexfile) Load() (lfindex *Index, err error) {
 }
 
 // Write index file.
-// TODO would it be faster to build a []byte and write once?
-func (ifile *Indexfile) Save(lfindex *Index) (err error) {
+// Builds a single (possibly large) []byte in RAM for a single write to file.
+func (ifile *Indexfile) Save(lfindex *Index) error {
 	ifile.Open(CREATE | WRITE_ONLY | APPEND)
 	defer ifile.Close()
-	irsz := int(ParamSize(NewIndexRecord()))
-	bytes := make([]byte, len(lfindex.list) * irsz)
-	var start int = 0
-	for _, rec := range lfindex.list {
-		for j, b := range rec.Pack() {
-			bytes[start + j] = b
-		}
-		start += irsz
-	}
-	_, err = ifile.LockedWriteAt(bytes, 0)
-	return
+	_, err := ifile.LockedWriteAt(lfindex.ToBytes(), 0)
+	return err
 }
 
 // Zapmap file methods.
@@ -605,6 +599,9 @@ func (zmap *Zapmap) Load() (err error) {
 
 // Write zapmap file.
 func (zmap *Zapmap) Save() (err error) {
+	if zmap.Len() == 0 {
+		zmap.debug.Basic("Attempt to save zapmap but it is empty")
+	}
 	zmap.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
@@ -670,6 +667,9 @@ func (cat *Catalog) Load(lbase *Logbase) (err error) {
 // we only write the value locations to file.
 func (cat *Catalog) Save() (err error) {
 	if cat.file == nil {return cat.debug.Error(FmtErrFileNotDefined(cat))}
+	if cat.Len() == 0 {
+		cat.debug.Basic("Attempt to save catalog %q but it is empty", cat)
+	}
 	cat.file.tmp.Open(CREATE | WRITE_ONLY)
 	var nw int
 	var pos LBUINT = 0
@@ -728,5 +728,54 @@ func (up *UserPermissions) Save() (err error) {
 	err = up.file.ReplaceWithTmpTwin()
 	up.RUnlock()
 	return
+}
+
+// Debug.
+
+// Format a byte slice as a hex string with spaces.
+func FmtHexString(b []byte) string {
+	h := []byte(hex.EncodeToString(b))
+	var buf bytes.Buffer
+	var c int = 1
+	for i := 0; i < len(h); i = i + 2 {
+		buf.WriteString(" ")
+		buf.Write(h[i:i+2])
+		c++
+		if c == 5 {
+			buf.WriteString(" ")
+			c = 1
+		}
+	}
+	return buf.String()
+}
+
+func (lbase *Logbase) DumpLogfile(fnum LBUINT) error {
+	lfile, err := lbase.GetLogfile(fnum)
+	if lbase.debug.Error(err) != nil {return err}
+	lrecs, err := lfile.Load()
+	if lbase.debug.Error(err) != nil {return err}
+	var lines []string
+	for _, lrec := range lrecs {
+		lines = append(lines, lrec.String())
+	}
+	lbase.debug.Dump(lines, "%v records for %s", len(lrecs), lfile.String())
+	return nil
+}
+
+func (lbase *Logbase) DumpIndexfile(fnum LBUINT) error {
+	lfile, err := lbase.GetLogfile(fnum)
+	if lbase.debug.Error(err) != nil {return err}
+	lfindex, err := lfile.GetIndexfile().Load()
+	if lbase.debug.Error(err) != nil {return err}
+	var lines []string
+	for _, irec := range lfindex.List {
+		lines = append(lines, irec.String())
+	}
+	lbase.debug.Dump(
+		lines,
+		"%v records for %s",
+		len(lfindex.List),
+		lfile.GetIndexfile().String())
+	return nil
 }
 

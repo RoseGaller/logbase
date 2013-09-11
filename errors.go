@@ -4,13 +4,14 @@
 package logbase
 
 import (
+	"github.com/h00gs/gubed"
 	"fmt"
 	"os"
 )
 
 // App level error handling.
 type AppError struct {
-	caller      *GoCaller
+	caller      *gubed.GoCaller
 	msg         string // Error message
 	tag         string
 }
@@ -28,7 +29,7 @@ func (err *AppError) Fatal()  {
 // Deliberately private function, to fix the number of jumps
 // from the caller.
 func makeAppError(jump int) *AppError {
-	return &AppError{caller: CaptureCaller(DEFAULT_JUMPS + jump)}
+	return &AppError{caller: gubed.CaptureCaller(DEFAULT_JUMPS + jump)}
 }
 
 // Produce a string to satisfy error interface.
@@ -148,6 +149,10 @@ func FmtErrFileNotFound(path string) *AppError {
 	return errFileNotFound(fmt.Sprintf("File %q not found.", path), 1)
 }
 
+func FmtErrDirNotFound(path string) *AppError {
+	return errFileNotFound(fmt.Sprintf("Directory %q not found.", path), 1)
+}
+
 func FmtErrFileNotDefined(obj interface{}) *AppError {
 	return errFileNotFound(fmt.Sprintf(
 		"File not defined for %T object %q.", obj, obj), 1)
@@ -229,5 +234,15 @@ func FmtErrUser(msg string, a ...interface{}) *AppError {
 
 func errUser(msg string, jump int) *AppError {
 	return makeAppError(jump).Describe(msg, "user")
+}
+
+// Bad command.
+
+func FmtErrBadCommand(msg string, a ...interface{}) *AppError {
+	return errBadCommand(fmt.Sprintf(msg, a...), 1)
+}
+
+func errBadCommand(msg string, jump int) *AppError {
+	return makeAppError(jump).Describe(msg, "bad_command")
 }
 
